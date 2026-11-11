@@ -161,6 +161,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
 
     if self.is_e2e(sm):
+      # predictive accel boost (sunnypilot#2089 backport); returns its input unchanged when the toggle is off
+      output_a_target_e2e = self.accel_boost_sp.update(sm, output_a_target_e2e)
       output_a_target = min(output_a_target_e2e, output_a_target_mpc)
       self.output_should_stop = output_should_stop_e2e or output_should_stop_mpc
       if output_a_target < output_a_target_mpc:

@@ -269,6 +269,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"MapTargetVelocities", {CLEAR_ON_ONROAD_TRANSITION, STRING}},
     {"SmartCruiseControlMap", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"SmartCruiseControlVision", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"AccelBoostSP", {PERSISTENT | BACKUP, BOOL, "0"}},  // predictive accel boost, sunnypilot#2089 backport; off by default here
 
     // Torque lateral control custom params
     {"CustomTorqueParams", {PERSISTENT | BACKUP , BOOL}},
