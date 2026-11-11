@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 
-from openpilot.selfdrive.ui.bp.mici.widgets.button_bp import BigParamControlBP
+from openpilot.selfdrive.ui.bp.mici.widgets.button_bp import BigMultiParamToggleBP, BigParamControlBP
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.widgets.scroller import NavScroller
 
@@ -17,7 +17,11 @@ class LongitudinalLayoutMici(NavScroller):
     self.disable_downhill_comp = BigParamControlBP("Disable Downhill Compensation", "disable_downhill_comp_UI")
     self.disable_ford_radar = BigParamControlBP("Disable Ford Radar (Vision-Only Leads)", "disable_ford_radar_UI")
 
+    # extra acceleration for the first few mph from a stop under openpilot longitudinal
+    self.launch_bias = BigMultiParamToggleBP("Launch Bias", "BPLaunchBias", ["off", "low", "medium", "high"])
+
     self._scroller.add_widgets([
+      self.launch_bias,
       self.disable_BP_long,
       self.disable_downhill_comp,
       self.disable_ford_radar,
