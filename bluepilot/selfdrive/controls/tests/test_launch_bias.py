@@ -11,10 +11,11 @@ from bluepilot.selfdrive.controls.launch_bias import LaunchBias, LAUNCH_BIAS_LEV
 MPH = 0.44704
 
 
-def make_sm(v_mph=0.0, enabled=True, model_stop=False, lead=None):
+def make_sm(v_mph=0.0, enabled=True, model_stop=False, lead=None, brake_prob=0.02):
   lead = lead or dict(status=False, dRel=0.0, vRel=0.0, vLead=0.0)
   return {'carState': SimpleNamespace(vEgo=v_mph * MPH), 'selfdriveState': SimpleNamespace(enabled=enabled),
-          'modelV2': SimpleNamespace(action=SimpleNamespace(shouldStop=model_stop)),
+          'modelV2': SimpleNamespace(action=SimpleNamespace(shouldStop=model_stop),
+                                     meta=SimpleNamespace(disengagePredictions=SimpleNamespace(brakePressProbs=[0.0, brake_prob, 0.0]))),
           'radarState': SimpleNamespace(leadOne=SimpleNamespace(**lead))}
 
 
@@ -53,9 +54,31 @@ class TestLaunchBias:
   def test_fades_out_by_5_mph(self, v_mph, frac):
     assert settle(on(3), make_sm(v_mph=v_mph)) == pytest.approx(frac * LAUNCH_BIAS_LEVELS[3], abs=0.02)
 
-  @pytest.mark.parametrize("a_target", [-2.0, -0.3, 0.0, 0.05])
-  def test_never_added_unless_the_plan_already_wants_to_go(self, a_target):
+  @pytest.mark.parametrize("a_target", [-2.0, -0.3, 0.0])
+  def test_never_added_unless_the_model_already_wants_to_go(self, a_target):
     assert settle(on(3), make_sm(), a_target=a_target) == 0.0
+
+  def test_small_positive_model_request_at_launch_gets_it(self):
+    # at launch the model's request starts around +0.1; that is the case this exists for
+    assert settle(on(2), make_sm(), a_target=0.09) == pytest.approx(LAUNCH_BIAS_LEVELS[2])
+
+  @pytest.mark.parametrize("brake_prob, frac", [(0.02, 1.0), (0.1, 1.0), (0.2, 0.5), (0.3, 0.0), (0.8, 0.0)])
+  def test_backs_off_when_the_model_expects_braking(self, brake_prob, frac):
+    assert settle(on(3), make_sm(brake_prob=brake_prob)) == pytest.approx(frac * LAUNCH_BIAS_LEVELS[3])
+
+  def test_no_model_prediction_means_no_bias(self):
+    sm = make_sm()
+    sm['modelV2'].meta.disengagePredictions.brakePressProbs = []
+    assert settle(on(3), sm) == 0.0
+
+  def test_lead_following_has_the_last_word(self):
+    # the planner takes min(model request + bias, MPC): mirror that here
+    lb = on(3)
+    a_model, a_mpc = 0.3, 0.45
+    out = 0.0
+    for _ in range(40):
+      out = min(lb.update(make_sm(), a_model, False), a_mpc)
+    assert out == a_mpc
 
   def test_never_added_when_the_planner_or_the_model_says_stop(self):
     assert settle(on(3), make_sm(), should_stop=True) == 0.0
