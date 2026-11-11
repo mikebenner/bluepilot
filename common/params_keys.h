@@ -360,7 +360,6 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
 
     // BluePilot: Portal (Web Routes Server)
     {"EnableWebRoutesServer", {PERSISTENT | BACKUP, BOOL, "0"}},
-    {"BPLaunchBias", {PERSISTENT | BACKUP, INT, "0"}},  // launch bias level: 0 off, 1 low, 2 medium, 3 high (bluepilot/selfdrive/controls/launch_bias.py)
     {"BPPortalPort", {PERSISTENT | BACKUP, INT, "8088"}},
 
     // BluePilot: connect backend — 0=Comma Connect, 1=Konik Stable, 2=Offline Mode.
