@@ -169,6 +169,9 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       output_a_target = output_a_target_mpc
       self.output_should_stop = output_should_stop_mpc
 
+    # BluePilot: don't let a brief flicker of the stop flag undo a "go" from a standstill
+    self.output_should_stop = self.go_debounce.update(self.output_should_stop, v_ego, output_a_target)
+
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
     self.output_a_target = np.clip(output_a_target, accel_clip[0], accel_clip[1])
