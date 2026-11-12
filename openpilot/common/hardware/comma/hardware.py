@@ -321,11 +321,9 @@ class HardwareComma(HardwareBase):
         continue
       gov = 'ondemand' if powersave_enabled else 'performance'
       sudo_write(gov, f'/sys/devices/system/cpu/cpufreq/policy{n}/scaling_governor')
-      # BluePilot (from bp-dev): no 1689 MHz cap. It pins the big cores to 60% of their speed even
-      # when cold; the kernel's thermal framework already lowers the maximum by temperature. Restore
-      # the hardware maximum in case an earlier boot of this session wrote the cap.
-      with open(f'/sys/devices/system/cpu/cpufreq/policy{n}/cpuinfo_max_freq') as f:
-        sudo_write(f.read().strip(), f'/sys/devices/system/cpu/cpufreq/policy{n}/scaling_max_freq')
+      if not powersave_enabled:
+        # cap max core freq to 1689 Mhz
+        sudo_write('1689600', f'/sys/devices/system/cpu/cpufreq/policy{n}/scaling_max_freq')
 
     # *** IRQ config ***
 
