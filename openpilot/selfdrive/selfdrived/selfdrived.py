@@ -678,7 +678,9 @@ class SelfdriveD:
 
 
 def main():
-  config_realtime_process(4, Priority.CTRL_HIGH)
+  # core 6, not 4: with card and controlsd also on 4 a Ford used all of that core, which starved
+  # the kernel's per-core worker and stalled disk writes issued from it. Core 6 only has camerad.
+  config_realtime_process(6, Priority.CTRL_HIGH)
   s = SelfdriveD()
   s.run()
 
