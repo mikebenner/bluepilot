@@ -194,6 +194,7 @@ class Controls(ControlsExt):
     hudControl.leadVisible = self.sm['longitudinalPlan'].hasLead
     hudControl.leadDistanceBars = self.sm['selfdriveState'].personality.raw + 1
     hudControl.visualAlert = self.sm['selfdriveState'].alertHudVisual
+    hudControl.audibleAlert = self.hud_audible_alert(self.sm['selfdriveState'].alertSound)
 
     hudControl.rightLaneVisible = True
     hudControl.leftLaneVisible = True

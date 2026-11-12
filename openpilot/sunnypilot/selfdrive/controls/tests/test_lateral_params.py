@@ -140,3 +140,26 @@ class TestPublishedParams(OpenpilotTestCase):
     CC_SP = custom.CarControlSP.new_message()
     CC_SP.params = self._ext(_Written(Params(), send_wheel_vibration_alerts=True)).published_params()
     self.assertTrue(published_bool(CC_SP, "send_wheel_vibration_alerts", WHEEL_ALERT_PARAMS))
+
+
+class TestHudAudibleAlert(OpenpilotTestCase):
+  def test_every_selfdrive_sound_can_be_assigned_to_car_control(self):
+    """The real message types, as controlsd uses them: a reader on one side, a builder on the other."""
+    import openpilot.cereal.messaging as messaging
+    from openpilot.cereal import log
+    from opendbc.car import structs
+    car_sounds = set(structs.CarControl.HUDControl.AudibleAlert.schema.enumerants)
+    for name in log.SelfdriveState.AudibleAlert.schema.enumerants:
+      ss = messaging.new_message('selfdriveState')
+      ss.selfdriveState.alertSound = name
+      CC = structs.CarControl.new_message()
+      CC.hudControl.audibleAlert = ControlsExt.hud_audible_alert(ss.as_reader().selfdriveState.alertSound)
+      self.assertEqual(str(CC.hudControl.audibleAlert), name if name in car_sounds else "none")
+
+  def test_a_number_without_a_name_becomes_none(self):
+    """Seen in a real drive log: reading such a value's name raises RuntimeError("Member was null")."""
+    import openpilot.cereal.messaging as messaging
+    for raw in (11, 200, 65535):
+      ss = messaging.new_message('selfdriveState')
+      ss.selfdriveState.alertSound = raw
+      self.assertEqual(ControlsExt.hud_audible_alert(ss.as_reader().selfdriveState.alertSound), "none")

@@ -20,6 +20,10 @@ from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import Lat
 
 
 BP_PARAMS_REFRESH_PERIOD = 0.5  # seconds
+# hudControl.audibleAlert and selfdriveState.alertSound are different enums: selfdriveState's number -> the
+# name hudControl has for the same sound
+HUD_SOUND_BY_RAW = {raw: name for name, raw in log.SelfdriveState.AudibleAlert.schema.enumerants.items()
+                    if name in structs.CarControl.HUDControl.AudibleAlert.schema.enumerants}
 # settings read by ford-op/opendbc bp-full's Ford car code, published next to the lateral ones
 BP_CAR_PARAMS = ("disable_BP_long_UI", "disable_downhill_comp_UI", "send_hands_free_cluster_msg",
                  "send_wheel_vibration_alerts")
@@ -118,6 +122,14 @@ class ControlsExt(ModelStateBase):
       CC_SP.params = self.published_params()
 
     return CC_SP
+
+  @staticmethod
+  def hud_audible_alert(alert_sound) -> str:
+    """selfdriveState.alertSound as a hudControl.audibleAlert name, for Ford's wheel vibration alerts
+    (opendbc wheel_alert_ext): a warning sound marks a forced disengage. A sound the car enum
+    doesn't have (preAlert, complete), or a number with no name at all, becomes none. Assigning the
+    enum value itself raises, and so does reading the name of a number the schema doesn't know."""
+    return HUD_SOUND_BY_RAW.get(getattr(alert_sound, "raw", alert_sound), "none")
 
   def published_params(self) -> list[dict]:
     """The settings published to the car code, re-read from Params every BP_PARAMS_REFRESH_PERIOD.
