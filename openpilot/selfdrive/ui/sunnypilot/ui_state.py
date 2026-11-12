@@ -10,6 +10,7 @@ from openpilot.cereal import messaging, log, custom
 from opendbc.car.structs import car
 from opendbc.sunnypilot.car.interfaces import has_bsm
 from openpilot.common.params import Params
+from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.helpers import icbm_with_op_long
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.display import OnroadBrightness
 from openpilot.sunnypilot.models.helpers import ACTIVE_BUNDLE_KEYS, get_active_source
 from openpilot.sunnypilot.sunnylink.sunnylink_state import SunnylinkState
@@ -235,7 +236,7 @@ class UIStateSP:
 
     # ICBM: clear if not available or if full longitudinal control is active
     if self.CP_SP is not None:
-      if not self.CP_SP.intelligentCruiseButtonManagementAvailable or has_long:
+      if not self.CP_SP.intelligentCruiseButtonManagementAvailable or (has_long and not (CP is not None and icbm_with_op_long(CP))):
         self.params.remove("IntelligentCruiseButtonManagement")
         self.has_icbm = False
     else:
