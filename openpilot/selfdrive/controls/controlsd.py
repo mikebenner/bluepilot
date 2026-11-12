@@ -194,8 +194,6 @@ class Controls(ControlsExt):
     hudControl.leadVisible = self.sm['longitudinalPlan'].hasLead
     hudControl.leadDistanceBars = self.sm['selfdriveState'].personality.raw + 1
     hudControl.visualAlert = self.sm['selfdriveState'].alertHudVisual
-    # for Ford's wheel vibration alerts (opendbc wheel_alert_ext): a warning sound marks a forced disengage
-    hudControl.audibleAlert = self.sm['selfdriveState'].alertSound
 
     hudControl.rightLaneVisible = True
     hudControl.leftLaneVisible = True
