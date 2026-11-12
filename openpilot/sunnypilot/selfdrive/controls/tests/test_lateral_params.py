@@ -121,3 +121,11 @@ class TestPublishedParams(OpenpilotTestCase):
     CC_SP.params = self._ext(_Written(Params(), disable_BP_long_UI=True)).published_params()
     self.assertTrue(published_bool(CC_SP, "disable_BP_long_UI", BPX_LONG_PARAMS))
     self.assertFalse(published_bool(CC_SP, "disable_downhill_comp_UI", BPX_LONG_PARAMS))
+
+  def test_hands_free_cluster_setting_reaches_the_car_code(self):
+    from opendbc.sunnypilot.car.ford.bluepilot.hud_ext import HUD_PARAMS
+    from opendbc.sunnypilot.car.ford.bluepilot.published import published_bool
+    from openpilot.cereal import custom
+    CC_SP = custom.CarControlSP.new_message()
+    CC_SP.params = self._ext(_Written(Params(), send_hands_free_cluster_msg=True)).published_params()
+    self.assertTrue(published_bool(CC_SP, "send_hands_free_cluster_msg", HUD_PARAMS))

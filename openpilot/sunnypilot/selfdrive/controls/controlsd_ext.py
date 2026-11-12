@@ -21,7 +21,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import Lat
 
 BP_PARAMS_REFRESH_PERIOD = 0.5  # seconds
 # settings read by ford-op/opendbc bp-full's Ford car code, published next to the lateral ones
-BP_CAR_PARAMS = ("disable_BP_long_UI", "disable_downhill_comp_UI")
+BP_CAR_PARAMS = ("disable_BP_long_UI", "disable_downhill_comp_UI", "send_hands_free_cluster_msg")
 
 
 class ControlsExt(ModelStateBase):
