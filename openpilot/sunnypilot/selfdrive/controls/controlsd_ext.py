@@ -20,6 +20,8 @@ from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import Lat
 
 
 BP_PARAMS_REFRESH_PERIOD = 0.5  # seconds
+# settings read by ford-op/opendbc bp-full's Ford car code, published next to the lateral ones
+BP_CAR_PARAMS = ("disable_BP_long_UI", "disable_downhill_comp_UI")
 
 
 class ControlsExt(ModelStateBase):
@@ -122,7 +124,7 @@ class ControlsExt(ModelStateBase):
     now = time.monotonic()
     cached = getattr(self, "_bp_params_cache", None)
     if cached is None or now - getattr(self, "_bp_params_cache_time", 0.0) > BP_PARAMS_REFRESH_PERIOD:
-      cached = self.read_lateral_params()
+      cached = self.read_lateral_params() + self.read_params(BP_CAR_PARAMS)
       self._bp_params_cache = cached
       self._bp_params_cache_time = now
     return cached
@@ -135,14 +137,17 @@ class ControlsExt(ModelStateBase):
     # imported here, not at module level: the key list lives in the opendbc submodule and only
     # Ford needs it, so a submodule on another layout must not break controlsd for other brands
     from opendbc.bluepilot_lateral.core.values_ext import BP_LATERAL_PARAMS
+    return self.read_params(BP_LATERAL_PARAMS)
+
+  def read_params(self, keys) -> list[dict]:
     entries = []
-    for key in BP_LATERAL_PARAMS:
+    for key in keys:
       try:
         value = self.params.get(key, return_default=True)
       except UnknownKeyName:
         # key list (submodule) and params_keys.h (this repo) drifted; skip rather than kill controlsd
         if key not in self._bp_unknown_keys_logged:
-          cloudlog.warning(f"BluePilot lateral param {key} not registered in params_keys.h; skipping")
+          cloudlog.warning(f"BluePilot param {key} not registered in params_keys.h; skipping")
           self._bp_unknown_keys_logged.add(key)
         continue
       if value is None:

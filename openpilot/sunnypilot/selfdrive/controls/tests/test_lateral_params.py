@@ -109,3 +109,15 @@ class TestPublishedParams(OpenpilotTestCase):
     ext._bp_params_cache_time -= 1.0
     ext.published_params()
     self.assertEqual(len(calls), 2 * n)
+
+  def test_long_settings_reach_the_car_code(self):
+    from opendbc.sunnypilot.car.ford.bluepilot.longitudinal_ext import BPX_LONG_PARAMS
+    from opendbc.sunnypilot.car.ford.bluepilot.published import published_bool
+    from openpilot.cereal import custom
+    CC_SP = custom.CarControlSP.new_message()
+    CC_SP.params = self._ext(Params()).published_params()
+    self.assertFalse(published_bool(CC_SP, "disable_BP_long_UI", BPX_LONG_PARAMS))
+    CC_SP = custom.CarControlSP.new_message()
+    CC_SP.params = self._ext(_Written(Params(), disable_BP_long_UI=True)).published_params()
+    self.assertTrue(published_bool(CC_SP, "disable_BP_long_UI", BPX_LONG_PARAMS))
+    self.assertFalse(published_bool(CC_SP, "disable_downhill_comp_UI", BPX_LONG_PARAMS))
