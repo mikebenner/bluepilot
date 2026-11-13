@@ -308,6 +308,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // BluePilot Ford car code (ford-op/opendbc bp-full)
     {"disable_BP_long_UI", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"disable_downhill_comp_UI", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"FordAccSendPrediction", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"FordAccSendTargetSpeed", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"send_hands_free_cluster_msg", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"send_wheel_vibration_alerts", {PERSISTENT | BACKUP, BOOL, "0"}},
 

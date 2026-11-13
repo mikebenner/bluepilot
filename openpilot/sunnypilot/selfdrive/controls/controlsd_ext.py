@@ -26,7 +26,7 @@ HUD_SOUND_BY_RAW = {raw: name for name, raw in log.SelfdriveState.AudibleAlert.s
                     if name in structs.CarControl.HUDControl.AudibleAlert.schema.enumerants}
 # settings read by ford-op/opendbc bp-full's Ford car code, published next to the lateral ones
 BP_CAR_PARAMS = ("disable_BP_long_UI", "disable_downhill_comp_UI", "send_hands_free_cluster_msg",
-                 "send_wheel_vibration_alerts")
+                 "send_wheel_vibration_alerts", "FordAccSendPrediction", "FordAccSendTargetSpeed")
 
 
 class ControlsExt(ModelStateBase):

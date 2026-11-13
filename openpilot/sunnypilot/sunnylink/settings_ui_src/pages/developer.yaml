@@ -99,6 +99,27 @@ sections:
     enablement:
     - $ref: '#/macros/not_engaged'
     - $ref: '#/macros/longitudinal'
+  # BluePilot: Ford ACC command fields sent the way Ford's own ACC sends them (opendbc longitudinal_ext.preview_signals)
+  - key: FordAccSendPrediction
+    widget: toggle
+    title: '[TEST] Ford: Send Predicted Acceleration'
+    description: With openpilot longitudinal on a Ford, sends the acceleration request in the ACC command's predicted-acceleration field, as Ford's own ACC does, instead of a constant. A test for the transmission holding first gear after a rolling slow-down.
+    visibility:
+    - type: capability
+      field: brand
+      equals: ford
+    enablement:
+    - $ref: '#/macros/longitudinal'
+  - key: FordAccSendTargetSpeed
+    widget: toggle
+    title: '[TEST] Ford: Send Target Speed'
+    description: With openpilot longitudinal on a Ford, sends a target speed about two seconds ahead of the car in the ACC command, as Ford's own ACC does, instead of the maximum. A test for the transmission holding first gear after a rolling slow-down.
+    visibility:
+    - type: capability
+      field: brand
+      equals: ford
+    enablement:
+    - $ref: '#/macros/longitudinal'
 - id: advanced_services
   title: Advanced Settings
   description: ''
