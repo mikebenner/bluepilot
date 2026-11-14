@@ -332,6 +332,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"FordLowSpeedFactor_ang", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
     {"FordHighSpeedFactor_ang", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
     {"FordHighSpeedDampening_ang", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
+    {"FordLowSpeedDampening_ang", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
     {"FordLowSpeedFloor_ang", {PERSISTENT | BACKUP, FLOAT, "0.0"}},
     {"lane_change_factor_high_ang", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
     {"enable_lane_positioning_ang", {PERSISTENT | BACKUP, BOOL, "0"}},
