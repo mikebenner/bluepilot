@@ -41,7 +41,6 @@ class VCruiseHelper(VCruiseHelperSP):
     # BluePilot: see pcm_owns_target
     self.pcm_target = False
     self.pcm_settle = 0
-    self.pcm_written = V_CRUISE_UNSET
     # End BluePilot
 
   @property
@@ -61,8 +60,9 @@ class VCruiseHelper(VCruiseHelperSP):
         # BluePilot: on a car whose PCM holds the set speed, the target can be the PCM's for a while (see pcm_owns_target)
         if not (self.CP.pcmCruise and self.pcm_owns_target(CS, is_metric)):
           self._update_v_cruise_non_pcm(CS, _enabled, is_metric)
+        if self.update_speed_limit_assist_v_cruise_non_pcm() and self.pcm_target:
+          self.hand_back_pcm_target()
         # End BluePilot
-        self.update_speed_limit_assist_v_cruise_non_pcm()
         self.v_cruise_cluster_kph = self.v_cruise_kph
       else:
         self.v_cruise_kph = CS.cruiseState.speed * CV.MS_TO_KPH
@@ -88,41 +88,55 @@ class VCruiseHelper(VCruiseHelperSP):
     Nothing gives the target a value at an engage: initialize_v_cruise leaves a PCM-cruise car alone, and the PCM's
     set speed can show a few frames after carControl.enabled, when the target is still unset (255 km/h). Set- taps then
     counted down from V_CRUISE_MAX: two taps made it 143 km/h, under ICBM's 90 mph "unset" hold, and ICBM pressed Set+
-    toward it. So the PCM owns the target:
-    - while it is unset (or out of range): it takes the PCM's set speed as soon as that is a real one;
-    - while it is at or below openpilot's minimum set speed: openpilot's arithmetic would lift it to the minimum, and
-      ICBM would then press Set+ after a Set-;
-    - after either, while a Set+/Set- press is held and for PCM_SETTLE_FRAMES after its release: the PCM applies the
-      press itself, and its display can update a frame after the release.
-    A value written by anything else meanwhile (Speed Limit Assist, after this method) ends the ownership; a press
-    still held then was the PCM's, so its release is not counted again. Otherwise openpilot's own logic runs."""
+    toward it. So the PCM owns the target while it is unset (or out of range), and takes the PCM's set speed as soon
+    as that is a real one (pcm_set_speed). A Set+/Set- press that began in that time is the PCM's to apply: the
+    ownership lasts while it is held and PCM_SETTLE_FRAMES after its release, since the display can update a frame or
+    two after the button. A Speed Limit Assist write ends it (hand_back_pcm_target). Otherwise openpilot's own logic
+    runs, exactly as before."""
     held = any(timer > 0 for timer in self.button_timers.values())
     unset = self.v_cruise_kph == V_CRUISE_UNSET or self.v_cruise_kph > V_CRUISE_MAX
-
-    if self.pcm_target and not unset and self.v_cruise_kph != self.pcm_written:
-      self.pcm_target, self.pcm_settle = False, 0
-      for button, timer in self.button_timers.items():
-        if timer > 0:
-          self.button_change_states[button]["enabled"] = False
-      return False
-
+    settling = self.pcm_target and self.pcm_settle > 0
     if self.pcm_target and held:
       self.pcm_settle = PCM_SETTLE_FRAMES
     elif self.pcm_settle > 0:
       self.pcm_settle -= 1
-    at_floor = self.v_cruise_kph <= self.v_cruise_min + 0.01
-    if not (unset or at_floor or (self.pcm_target and (held or self.pcm_settle > 0))):
+    if not (unset or (self.pcm_target and (held or settling))):
       self.pcm_target = False
       return False
 
     self.pcm_target = True
-    shown_kph = CS.cruiseState.speedCluster * CV.MS_TO_KPH
-    if 0 < shown_kph <= V_CRUISE_MAX:   # a real set speed: Ford's display signal sends 254 (Unknown) and 255 (Fault)
-      self.v_cruise_kph = float(shown_kph)
+    set_speed = self.pcm_set_speed(CS, is_metric)
+    if set_speed is not None:
+      self.v_cruise_kph = set_speed
     elif unset:
       self.v_cruise_kph = V_CRUISE_UNSET
-    self.pcm_written = self.v_cruise_kph
     return True
+
+  def pcm_set_speed(self, CS, is_metric) -> float | None:
+    """The PCM's displayed set speed as a target in km/h, or None when it shows none. Only a real one: Ford's display
+    signal sends 254 (Unknown) and 255 (Fault) as codes. On openpilot's own step grid (1 km/h, or IMPERIAL_INCREMENT
+    for a mph display), at the grid point that reads back as the same whole number in ICBM, so a long press steps from
+    it like from any other target and 86 to 90 mph do not read back one low. Not below openpilot's minimum set speed,
+    as everywhere else in openpilot: ICBM then brings the PCM up to it."""
+    kph = CS.cruiseState.speedCluster * CV.MS_TO_KPH
+    if not 0 < kph <= V_CRUISE_MAX:
+      return None
+    if is_metric:
+      grid = float(round(kph))
+    else:
+      mph = round(CS.cruiseState.speedCluster * CV.MS_TO_MPH)
+      n = round(mph * CV.MPH_TO_KPH / IMPERIAL_INCREMENT)
+      candidates = [min(k * IMPERIAL_INCREMENT, V_CRUISE_MAX) for k in (n, n - 1, n + 1)]
+      grid = next((c for c in candidates if round(c * CV.KPH_TO_MPH) == mph), kph)
+    return float(max(grid, self.v_cruise_min))
+
+  def hand_back_pcm_target(self) -> None:
+    """Speed Limit Assist wrote the target: it is openpilot's again. A press still held was the PCM's to apply, so its
+    release is not counted on top of the limit."""
+    self.pcm_target, self.pcm_settle = False, 0
+    for button, timer in self.button_timers.items():
+      if timer > 0:
+        self.button_change_states[button]["enabled"] = False
   # End BluePilot
 
   def _update_v_cruise_non_pcm(self, CS, enabled, is_metric):

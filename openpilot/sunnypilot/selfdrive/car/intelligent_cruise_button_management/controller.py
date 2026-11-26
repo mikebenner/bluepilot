@@ -88,9 +88,9 @@ class IntelligentCruiseButtonManagement:
     MAX_REASONABLE_TARGET = 145 if self.is_metric else 90
     if self.v_target >= MAX_REASONABLE_TARGET or self.v_target == 0:
       self.v_target = self.v_cruise_cluster
-    # BluePilot: nor is a cluster reading at the top of the range: Ford's display signal sends 254 (Unknown) and 255
-    # (Fault) as codes, not set speeds. Hold: no presses either way until it shows a set speed again.
-    if self.v_cruise_cluster >= MAX_REASONABLE_TARGET:
+    # BluePilot: nor is a cluster reading of 254 or more: Ford's display signal sends 254 (Unknown) and 255 (Fault) as
+    # codes, not set speeds. Hold: no presses either way until it shows a set speed again.
+    if self.v_cruise_cluster >= 254:
       self.v_target = self.v_cruise_cluster
 
     # BluePilot: engage guard. For ENGAGE_GUARD_TIME after the PCM engages, the target is capped at

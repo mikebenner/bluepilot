@@ -132,10 +132,14 @@ class VCruiseHelperSP:
 
     return False
 
-  def update_speed_limit_assist_v_cruise_non_pcm(self) -> None:
+  def update_speed_limit_assist_v_cruise_non_pcm(self) -> bool:
+    """Returns whether it wrote the target (BluePilot: VCruiseHelper.pcm_owns_target hands the target back on that)."""
+    wrote = False
     if self.sla_state in SLA_ACTIVE_STATES and (self.prev_sla_state not in SLA_ACTIVE_STATES or
                                                 self.update_speed_limit_final_last_changed):
       self.v_cruise_kph = np.clip(round(self.speed_limit_final_last_kph, 1), self.v_cruise_min, V_CRUISE_MAX)
+      wrote = True
 
     self.prev_sla_state = self.sla_state
     self.prev_speed_limit_final_last_kph = self.speed_limit_final_last_kph
+    return wrote
