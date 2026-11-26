@@ -18,6 +18,7 @@ IMPERIAL_INCREMENT = round(CV.MPH_TO_KPH, 1)  # round here to avoid rounding err
 ButtonEvent = car.CarState.ButtonEvent
 ButtonType = car.CarState.ButtonEvent.Type
 CRUISE_LONG_PRESS = 50
+PCM_SETTLE_FRAMES = 20  # BluePilot: see pcm_owns_target; 0.2 s, as BluePilot 7.1's cluster follower
 CRUISE_NEAREST_FUNC = {
   ButtonType.accelCruise: math.ceil,
   ButtonType.decelCruise: math.floor,
@@ -37,7 +38,11 @@ class VCruiseHelper(VCruiseHelperSP):
     self.v_cruise_kph_last = 0
     self.button_timers = {ButtonType.decelCruise: 0, ButtonType.accelCruise: 0}
     self.button_change_states = {btn: {"standstill": False, "enabled": False} for btn in self.button_timers}
-    self.pcm_target = False  # BluePilot: see pcm_owns_target
+    # BluePilot: see pcm_owns_target
+    self.pcm_target = False
+    self.pcm_settle = 0
+    self.pcm_written = V_CRUISE_UNSET
+    # End BluePilot
 
   @property
   def v_cruise_initialized(self):
@@ -85,24 +90,38 @@ class VCruiseHelper(VCruiseHelperSP):
     counted down from V_CRUISE_MAX: two taps made it 143 km/h, under ICBM's 90 mph "unset" hold, and ICBM pressed Set+
     toward it. So the PCM owns the target:
     - while it is unset (or out of range): it takes the PCM's set speed as soon as that is a real one;
-    - after that, while a Set+/Set- press that began then is still held: the PCM applies that press itself;
-    - while it is below openpilot's minimum set speed: openpilot's arithmetic would lift it to the minimum, and ICBM
-      would then press Set+ after a Set-.
-    Otherwise openpilot's own logic runs. Speed Limit Assist writes its limit after this, as before."""
+    - while it is at or below openpilot's minimum set speed: openpilot's arithmetic would lift it to the minimum, and
+      ICBM would then press Set+ after a Set-;
+    - after either, while a Set+/Set- press is held and for PCM_SETTLE_FRAMES after its release: the PCM applies the
+      press itself, and its display can update a frame after the release.
+    A value written by anything else meanwhile (Speed Limit Assist, after this method) ends the ownership; a press
+    still held then was the PCM's, so its release is not counted again. Otherwise openpilot's own logic runs."""
     held = any(timer > 0 for timer in self.button_timers.values())
     unset = self.v_cruise_kph == V_CRUISE_UNSET or self.v_cruise_kph > V_CRUISE_MAX
-    if not (unset or (self.pcm_target and held) or self.v_cruise_kph < self.v_cruise_min):
+
+    if self.pcm_target and not unset and self.v_cruise_kph != self.pcm_written:
+      self.pcm_target, self.pcm_settle = False, 0
+      for button, timer in self.button_timers.items():
+        if timer > 0:
+          self.button_change_states[button]["enabled"] = False
+      return False
+
+    if self.pcm_target and held:
+      self.pcm_settle = PCM_SETTLE_FRAMES
+    elif self.pcm_settle > 0:
+      self.pcm_settle -= 1
+    at_floor = self.v_cruise_kph <= self.v_cruise_min + 0.01
+    if not (unset or at_floor or (self.pcm_target and (held or self.pcm_settle > 0))):
       self.pcm_target = False
       return False
 
     self.pcm_target = True
-    # a real set speed only: Ford's display signal sends 254 (Unknown) and 255 (Fault) as codes
-    shown = CS.cruiseState.speedCluster * (CV.MS_TO_KPH if is_metric else CV.MS_TO_MPH)
-    if 0 < CS.cruiseState.speedCluster * CV.MS_TO_KPH <= V_CRUISE_MAX:
-      # on the grid openpilot's own steps use, so a long press moves by whole 5 mph / 10 km/h from the first tick
-      self.v_cruise_kph = float(round(shown)) * (1. if is_metric else IMPERIAL_INCREMENT)
+    shown_kph = CS.cruiseState.speedCluster * CV.MS_TO_KPH
+    if 0 < shown_kph <= V_CRUISE_MAX:   # a real set speed: Ford's display signal sends 254 (Unknown) and 255 (Fault)
+      self.v_cruise_kph = float(shown_kph)
     elif unset:
       self.v_cruise_kph = V_CRUISE_UNSET
+    self.pcm_written = self.v_cruise_kph
     return True
   # End BluePilot
 
