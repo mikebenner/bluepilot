@@ -41,6 +41,7 @@ class VCruiseHelper(VCruiseHelperSP):
     # BluePilot: see pcm_owns_target
     self.pcm_target = False
     self.pcm_settle = 0
+    self.pcm_handed_back = False
     # End BluePilot
 
   @property
@@ -73,12 +74,25 @@ class VCruiseHelper(VCruiseHelperSP):
         elif CS.cruiseState.speed == -1:
           self.v_cruise_kph = -1
           self.v_cruise_cluster_kph = -1
+        # BluePilot: with ICBM (pcmCruise, not pcmCruiseSpeed) this target is the one openpilot keeps once engaged: the
+        # same value an engage would take (pcm_set_speed), and no target for a code such as Ford's Unknown/Fault
+        elif self.CP.pcmCruise and not self.CP_SP.pcmCruiseSpeed:
+          set_speed = self.pcm_set_speed(CS, is_metric)
+          self.v_cruise_kph = set_speed if set_speed is not None else V_CRUISE_UNSET
+        # End BluePilot
     else:
       self.v_cruise_kph = V_CRUISE_UNSET
       self.v_cruise_cluster_kph = V_CRUISE_UNSET
 
     if not self.CP.pcmCruise or not self.CP_SP.pcmCruiseSpeed:
       self.update_button_timers(CS, enabled)
+      # BluePilot: see hand_back_pcm_target; after the timers, so a press that began on this frame is included
+      if self.pcm_handed_back:
+        self.pcm_handed_back = False
+        for button, timer in self.button_timers.items():
+          if timer > 0:
+            self.button_change_states[button]["enabled"] = False
+      # End BluePilot
 
   # BluePilot
   def pcm_owns_target(self, CS, is_metric) -> bool:
@@ -119,24 +133,27 @@ class VCruiseHelper(VCruiseHelperSP):
     it like from any other target and 86 to 90 mph do not read back one low. Not below openpilot's minimum set speed,
     as everywhere else in openpilot: ICBM then brings the PCM up to it."""
     kph = CS.cruiseState.speedCluster * CV.MS_TO_KPH
-    if not 0 < kph <= V_CRUISE_MAX:
+    if not 0 < kph <= V_CRUISE_MAX + 0.5:   # + 0.5: the signal is a Float32, and 145 km/h reads 145.000003
       return None
     if is_metric:
-      grid = float(round(kph))
+      grid = float(min(round(kph), V_CRUISE_MAX))
     else:
       mph = round(CS.cruiseState.speedCluster * CV.MS_TO_MPH)
       n = round(mph * CV.MPH_TO_KPH / IMPERIAL_INCREMENT)
+      reads = lambda x: round(min(x, V_CRUISE_MAX) * CV.KPH_TO_MPH)  # noqa: E731
       candidates = [min(k * IMPERIAL_INCREMENT, V_CRUISE_MAX) for k in (n, n - 1, n + 1)]
-      grid = next((c for c in candidates if round(c * CV.KPH_TO_MPH) == mph), kph)
+      candidates = [c for c in candidates if reads(c) == mph]
+      # above 85 mph the 1.6 km/h grid drifts half a mph from whole mph: prefer the point a Set- also reads right from
+      candidates.sort(key=lambda c: reads(c - IMPERIAL_INCREMENT) != mph - 1)
+      grid = candidates[0] if candidates else min(kph, V_CRUISE_MAX)
     return float(max(grid, self.v_cruise_min))
 
   def hand_back_pcm_target(self) -> None:
-    """Speed Limit Assist wrote the target: it is openpilot's again. A press still held was the PCM's to apply, so its
-    release is not counted on top of the limit."""
+    """Speed Limit Assist wrote the target: it is openpilot's again. A press held now, including one that began on
+    this frame, was the PCM's to apply, so its release is not counted on top of the limit (marked in update_v_cruise
+    once this frame's button events are registered)."""
     self.pcm_target, self.pcm_settle = False, 0
-    for button, timer in self.button_timers.items():
-      if timer > 0:
-        self.button_change_states[button]["enabled"] = False
+    self.pcm_handed_back = True
   # End BluePilot
 
   def _update_v_cruise_non_pcm(self, CS, enabled, is_metric):

@@ -42,9 +42,10 @@ class Truck:
     self.sent = []
     self.icbm_targets = []
 
-  def step(self, shown: float, button=None, pressed=False, late=LATE) -> None:
-    """One 10 ms frame, engaged. The display reads 0 for the first `late` frames."""
-    speed = 0.0 if self.frame < late else float(shown) * self.unit
+  def step(self, shown: float, button=None, pressed=False, late=LATE, enabled=True, unit=None) -> None:
+    """One 10 ms frame, openpilot engaged unless enabled=False (the PCM's cruise stays on). The display reads 0 for the
+    first `late` frames; `unit` overrides the display unit (a car whose display unit differs from openpilot's)."""
+    speed = 0.0 if self.frame < late else float(shown) * (unit or self.unit)
     events = [{"type": button, "pressed": pressed}] if button is not None else []
     CS = car.CarState(vEgo=15.6, cruiseState={"available": True, "enabled": True, "speed": speed, "speedCluster": speed},
                       buttonEvents=events).as_reader()
@@ -54,12 +55,12 @@ class Truck:
       plan.speedLimit.resolver.speedLimitFinalLast = self.limit * self.unit
       plan.speedLimit.assist.state = "active"
     self.helper.update_speed_limit_assist(self.metric, plan.as_reader())
-    self.helper.update_v_cruise(CS, True, self.metric)
-    if not self.enabled_prev:
+    self.helper.update_v_cruise(CS, enabled, self.metric)
+    if enabled and not self.enabled_prev:
       self.helper.initialize_v_cruise(self.CS_prev if self.CS_prev is not None else CS, 0)
-    self.enabled_prev, self.CS_prev = True, CS
+    self.enabled_prev, self.CS_prev = enabled, CS
     target = float(min(self.helper.v_cruise_kph, V_CRUISE_MAX)) * CV.KPH_TO_MS
-    self.icbm.run(CS, car.CarControl(enabled=True).as_reader(), custom.LongitudinalPlanSP(vTarget=target).as_reader(), self.metric)
+    self.icbm.run(CS, car.CarControl(enabled=enabled).as_reader(), custom.LongitudinalPlanSP(vTarget=target).as_reader(), self.metric)
     self.sent.append(self.icbm.cruise_button)
     self.icbm_targets.append(self.icbm.v_target)
     self.frame += 1
@@ -297,6 +298,98 @@ class TestUnsetTargetSeed(unittest.TestCase):
         truck.run(19, 500)
         self.assertEqual(truck.target, 20)
         self.assertLessEqual(max(truck.icbm_targets[400:]), 20)
+
+  def test_a_display_dropout_stops_a_raise_under_way(self):
+    # a 16 mph engage: ICBM raises the PCM toward the 20 mph minimum; the display reading 0 stops it at once
+    truck = Truck()
+    truck.run(16, 96)
+    raising = len(truck.sent)
+    truck.run(16, 300, late=0)
+    self.assertTrue(SendButtonState.increase in truck.sent[raising:])
+    dropout = len(truck.sent)
+    truck.run(0, 200, late=0)
+    self.assertNotIn(SendButtonState.increase, truck.sent[dropout:])
+    self.assertNotIn(SendButtonState.decrease, truck.sent[dropout:])
+    truck.run(20, 100, late=0)
+    self.assertEqual(truck.target, 20)
+
+  def test_a_tap_down_from_86_mph(self):
+    # above 85 mph the 1.6 km/h grid is half a mph off whole mph: the seed is the point a Set- also reads right from
+    truck = Truck()
+    truck.run(86, 400)
+    truck.tap(ButtonType.decelCruise, 85, 86)
+    truck.run(85, 400)
+    self.assertEqual(truck.target, 85)
+    self.assertFalse(truck.increased)
+
+  def test_a_set_speed_taken_while_disengaged_is_the_same_value(self):
+    # openpilot off with the PCM's cruise on, then on: the target is what an engage would have taken
+    for shown, want in ((35, 35), (16, 20)):
+      with self.subTest(shown=shown):
+        truck = Truck()
+        truck.run(shown, 10, late=0, enabled=False)
+        truck.run(shown, 400, late=0)
+        self.assertEqual(truck.target, want)
+    # and a long press released between ticks still steps a whole 5 mph
+    truck = Truck()
+    truck.run(35, 10, late=0, enabled=False)
+    truck.run(35, 400, late=0)
+    truck.step(35, ButtonType.decelCruise, True, late=0)
+    truck.run(35, 65, late=0)
+    truck.step(34, ButtonType.decelCruise, False, late=0)
+    truck.run(34, 400, late=0)
+    self.assertEqual(truck.target, 30)
+    self.assertFalse(truck.increased)
+
+  def test_a_code_while_disengaged_is_no_target(self):
+    for code in (254, 255):
+      with self.subTest(code=code):
+        truck = Truck()
+        truck.step(code, late=0, enabled=False)
+        self.assertEqual(truck.helper.v_cruise_kph, V_CRUISE_UNSET)
+        truck.step(code, late=0)                      # the engage frame
+        self.assertEqual(truck.helper.v_cruise_kph, V_CRUISE_UNSET)
+
+  def test_a_code_in_the_cars_own_unit_holds(self):
+    # a car whose display is in km/h while openpilot shows mph: 254 km/h reads 158 mph
+    truck = Truck()
+    truck.run(35, 400)
+    sent = len(truck.sent)
+    truck.run(254, 120, late=0, unit=CV.KPH_TO_MS)
+    self.assertNotIn(SendButtonState.increase, truck.sent[sent:])
+    self.assertNotIn(SendButtonState.decrease, truck.sent[sent:])
+    self.assertEqual(truck.target, 35)
+
+  def test_145_km_h_is_a_set_speed(self):
+    truck = Truck(metric=True)
+    truck.run(145, 400)
+    self.assertEqual(truck.helper.v_cruise_kph, 145.)
+
+  def test_a_limit_written_on_the_frame_a_press_begins(self):
+    truck = Truck()
+    truck.run(35, 60, late=60)                        # no display yet
+    truck.limit = 45
+    truck.step(35, ButtonType.decelCruise, True, late=60)
+    truck.run(35, 3, late=60)
+    truck.run(35, 6, late=0)
+    truck.step(35, ButtonType.decelCruise, False, late=0)
+    truck.run(35, 300, late=0)
+    self.assertEqual(truck.target, 45)
+
+  def test_a_second_tap_within_the_settle_window_is_the_pcms(self):
+    # a press that began before the target existed, then another one: inside the 0.2 s after the first release the
+    # PCM applies it and the target follows the PCM (taken or refused); after it, openpilot counts it as usual
+    for gap, pcm_after, want in ((PCM_SETTLE_FRAMES - 1, 34, 34), (PCM_SETTLE_FRAMES - 1, 33, 33), (PCM_SETTLE_FRAMES + 5, 33, 33)):
+      with self.subTest(gap=gap, pcm_after=pcm_after):
+        truck = Truck()
+        truck.step(35)
+        truck.step(35, ButtonType.decelCruise, True)
+        truck.step(34, ButtonType.decelCruise, False, late=2)
+        truck.run(34, gap, late=0)
+        truck.tap(ButtonType.decelCruise, pcm_after, 34)
+        truck.run(pcm_after, 500, late=0)
+        self.assertEqual(truck.target, want)
+        self.assertFalse(truck.increased)
 
   def test_stock_set_speed_handling_is_unchanged(self):
     # the PCM owns the set speed (no ICBM): the target is the PCM's, unset while it reads 0
