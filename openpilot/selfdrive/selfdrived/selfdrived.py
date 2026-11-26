@@ -456,7 +456,6 @@ class SelfdriveD:
         self.logged_comm_issue = logs
     else:
       self.logged_comm_issue = None
-    self.comm_issue_counter = 0  # BluePilot (from bp-dev): debounce of the generic commIssue check
 
     if not self.CP.notCar and not big_model_settling:  # localization has nothing to work with during the load
       # the defaults of a message that was never received are not a localizer failure
