@@ -52,6 +52,15 @@ class VCruiseHelper(VCruiseHelperSP):
     if CS.cruiseState.available:
       if not self.CP.pcmCruise or (not self.CP_SP.pcmCruiseSpeed and _enabled):
         # if stock cruise is completely disabled, then we can use our own set speed logic
+        # BluePilot: with ICBM on a car whose PCM holds the set speed, nothing gives the target a value at an
+        # engage: initialize_v_cruise leaves a PCM-cruise car alone, and the PCM's set speed can show a few frames
+        # after carControl.enabled, when the branch below has already made the target unset. It then stayed unset
+        # until Speed Limit Assist wrote a limit. With no limit known, a Set- tap counted down from V_CRUISE_MAX:
+        # two taps made the target 143 km/h and ICBM pressed Set+ toward it. An unset target takes the cluster set
+        # speed, as the PCM shows it, as soon as it shows; a target that has a value is left alone.
+        if self.CP.pcmCruise and self.v_cruise_kph == V_CRUISE_UNSET and CS.cruiseState.speedCluster > 0:
+          self.v_cruise_kph = float(min(CS.cruiseState.speedCluster * CV.MS_TO_KPH, V_CRUISE_MAX))
+        # End BluePilot
         self._update_v_cruise_non_pcm(CS, _enabled, is_metric)
         self.update_speed_limit_assist_v_cruise_non_pcm()
         self.v_cruise_cluster_kph = self.v_cruise_kph
