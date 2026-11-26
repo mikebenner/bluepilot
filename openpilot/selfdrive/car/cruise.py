@@ -37,6 +37,7 @@ class VCruiseHelper(VCruiseHelperSP):
     self.v_cruise_kph_last = 0
     self.button_timers = {ButtonType.decelCruise: 0, ButtonType.accelCruise: 0}
     self.button_change_states = {btn: {"standstill": False, "enabled": False} for btn in self.button_timers}
+    self.pcm_target = False  # BluePilot: see pcm_owns_target
 
   @property
   def v_cruise_initialized(self):
@@ -52,16 +53,10 @@ class VCruiseHelper(VCruiseHelperSP):
     if CS.cruiseState.available:
       if not self.CP.pcmCruise or (not self.CP_SP.pcmCruiseSpeed and _enabled):
         # if stock cruise is completely disabled, then we can use our own set speed logic
-        # BluePilot: with ICBM on a car whose PCM holds the set speed, nothing gives the target a value at an
-        # engage: initialize_v_cruise leaves a PCM-cruise car alone, and the PCM's set speed can show a few frames
-        # after carControl.enabled, when the branch below has already made the target unset. It then stayed unset
-        # until Speed Limit Assist wrote a limit. With no limit known, a Set- tap counted down from V_CRUISE_MAX:
-        # two taps made the target 143 km/h and ICBM pressed Set+ toward it. An unset target takes the cluster set
-        # speed, as the PCM shows it, as soon as it shows; a target that has a value is left alone.
-        if self.CP.pcmCruise and self.v_cruise_kph == V_CRUISE_UNSET and CS.cruiseState.speedCluster > 0:
-          self.v_cruise_kph = float(min(CS.cruiseState.speedCluster * CV.MS_TO_KPH, V_CRUISE_MAX))
+        # BluePilot: on a car whose PCM holds the set speed, the target can be the PCM's for a while (see pcm_owns_target)
+        if not (self.CP.pcmCruise and self.pcm_owns_target(CS, is_metric)):
+          self._update_v_cruise_non_pcm(CS, _enabled, is_metric)
         # End BluePilot
-        self._update_v_cruise_non_pcm(CS, _enabled, is_metric)
         self.update_speed_limit_assist_v_cruise_non_pcm()
         self.v_cruise_cluster_kph = self.v_cruise_kph
       else:
@@ -79,6 +74,37 @@ class VCruiseHelper(VCruiseHelperSP):
 
     if not self.CP.pcmCruise or not self.CP_SP.pcmCruiseSpeed:
       self.update_button_timers(CS, enabled)
+
+  # BluePilot
+  def pcm_owns_target(self, CS, is_metric) -> bool:
+    """ICBM on a car whose PCM holds the set speed (Ford with openpilot longitudinal): whether the target is the PCM's
+    own set speed this frame, in which case openpilot's button arithmetic does not run.
+
+    Nothing gives the target a value at an engage: initialize_v_cruise leaves a PCM-cruise car alone, and the PCM's
+    set speed can show a few frames after carControl.enabled, when the target is still unset (255 km/h). Set- taps then
+    counted down from V_CRUISE_MAX: two taps made it 143 km/h, under ICBM's 90 mph "unset" hold, and ICBM pressed Set+
+    toward it. So the PCM owns the target:
+    - while it is unset (or out of range): it takes the PCM's set speed as soon as that is a real one;
+    - after that, while a Set+/Set- press that began then is still held: the PCM applies that press itself;
+    - while it is below openpilot's minimum set speed: openpilot's arithmetic would lift it to the minimum, and ICBM
+      would then press Set+ after a Set-.
+    Otherwise openpilot's own logic runs. Speed Limit Assist writes its limit after this, as before."""
+    held = any(timer > 0 for timer in self.button_timers.values())
+    unset = self.v_cruise_kph == V_CRUISE_UNSET or self.v_cruise_kph > V_CRUISE_MAX
+    if not (unset or (self.pcm_target and held) or self.v_cruise_kph < self.v_cruise_min):
+      self.pcm_target = False
+      return False
+
+    self.pcm_target = True
+    # a real set speed only: Ford's display signal sends 254 (Unknown) and 255 (Fault) as codes
+    shown = CS.cruiseState.speedCluster * (CV.MS_TO_KPH if is_metric else CV.MS_TO_MPH)
+    if 0 < CS.cruiseState.speedCluster * CV.MS_TO_KPH <= V_CRUISE_MAX:
+      # on the grid openpilot's own steps use, so a long press moves by whole 5 mph / 10 km/h from the first tick
+      self.v_cruise_kph = float(round(shown)) * (1. if is_metric else IMPERIAL_INCREMENT)
+    elif unset:
+      self.v_cruise_kph = V_CRUISE_UNSET
+    return True
+  # End BluePilot
 
   def _update_v_cruise_non_pcm(self, CS, enabled, is_metric):
     # handle button presses. TODO: this should be in state_control, but a decelCruise press

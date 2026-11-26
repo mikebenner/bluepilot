@@ -1,10 +1,11 @@
-"""ICBM on a car whose PCM holds the set speed (Ford: pcmCruise, not pcmCruiseSpeed): an unset target takes the
-cluster set speed once it shows.
+"""ICBM on a car whose PCM holds the set speed (Ford: pcmCruise, not pcmCruiseSpeed): while openpilot has no usable
+target, the target is the PCM's own set speed (VCruiseHelper.pcm_owns_target).
 
 Without that, the target stayed unset after an engage where the PCM's set speed arrived a few frames late, and with
 no speed limit for Speed Limit Assist to write, two Set- taps counted down from the 145 km/h maximum: the target became
 143 km/h (89 mph) and ICBM pressed Set+ toward it. The real VCruiseHelper and ICBM controller are stepped here at
-100 Hz; the planner is stood in for by min(set speed, 145 km/h), as when cruise is its limiting source.
+100 Hz; the planner is stood in for by min(set speed, 145 km/h), as when cruise is its limiting source. Every scenario
+checks the one property that matters: ICBM never presses opposite to what the driver asked for.
 """
 import unittest
 
@@ -25,6 +26,7 @@ class Truck:
     self.CP = structs.CarParams(brand="ford", pcmCruise=pcm_cruise, openpilotLongitudinalControl=op_long).as_reader()
     self.CP_SP = custom.CarParamsSP(pcmCruiseSpeed=pcm_cruise_speed, intelligentCruiseButtonManagementAvailable=True).as_reader()
     self.helper = VCruiseHelper(self.CP, self.CP_SP)
+    self.helper.custom_acc_enabled = False   # ordinary 1 mph / 5 mph steps, whatever this machine's settings say
     self.icbm = IntelligentCruiseButtonManagement(self.CP, self.CP_SP)
     self.frame = 0
     self.enabled_prev = False
@@ -33,7 +35,7 @@ class Truck:
 
   def step(self, cluster_mph: float, button=None, pressed=False, late=LATE) -> None:
     """One 10 ms frame, engaged. The cluster set speed reads 0 for the first `late` frames."""
-    shown = 0.0 if self.frame < late else cluster_mph * CV.MPH_TO_MS
+    shown = 0.0 if self.frame < late else float(cluster_mph) * CV.MPH_TO_MS
     events = [{"type": button, "pressed": pressed}] if button is not None else []
     CS = car.CarState(vEgo=15.6, cruiseState={"available": True, "enabled": True, "speed": shown, "speedCluster": shown},
                       buttonEvents=events).as_reader()
@@ -60,6 +62,14 @@ class Truck:
   def target_mph(self) -> float:
     return float(self.helper.v_cruise_kph) * CV.KPH_TO_MPH
 
+  @property
+  def increased(self) -> bool:
+    return SendButtonState.increase in self.sent
+
+  @property
+  def decreased(self) -> bool:
+    return SendButtonState.decrease in self.sent
+
 
 class TestUnsetTargetSeed(unittest.TestCase):
   def test_a_late_cluster_speed_becomes_the_target(self):
@@ -67,9 +77,9 @@ class TestUnsetTargetSeed(unittest.TestCase):
     truck.run(35, LATE)
     self.assertEqual(truck.helper.v_cruise_kph, V_CRUISE_UNSET)   # nothing to take yet
     truck.step(35)
-    self.assertAlmostEqual(truck.target_mph, 35, places=1)
+    self.assertEqual(round(truck.target_mph), 35)
     truck.run(35, 400)
-    self.assertAlmostEqual(truck.target_mph, 35, places=1)
+    self.assertEqual(round(truck.target_mph), 35)
 
   def test_set_minus_taps_lower_the_target_and_icbm_never_presses_up(self):
     truck = Truck()
@@ -78,7 +88,7 @@ class TestUnsetTargetSeed(unittest.TestCase):
     truck.run(34, 40)
     truck.tap(ButtonType.decelCruise, 33, 34)
     truck.run(33, 500)   # past the driver-press inhibit and the engage guard
-    self.assertAlmostEqual(truck.target_mph, 33, places=1)
+    self.assertEqual(round(truck.target_mph), 33)
     self.assertEqual(truck.icbm.v_target, 33)
     self.assertNotIn(SendButtonState.increase, truck.sent)
 
@@ -94,9 +104,84 @@ class TestUnsetTargetSeed(unittest.TestCase):
     # has nothing to press
     truck = Truck()
     truck.run(16, 400)
-    self.assertAlmostEqual(truck.target_mph, 16, places=1)
-    self.assertNotIn(SendButtonState.increase, truck.sent)
-    self.assertNotIn(SendButtonState.decrease, truck.sent)
+    self.assertEqual(round(truck.target_mph), 16)
+    self.assertFalse(truck.increased or truck.decreased)
+
+  def test_below_the_minimum_a_tap_never_lifts_the_target(self):
+    # the PCM either takes the tap (16 -> 15 / 16 -> 17) or holds; the target follows it either way
+    for button, after in ((ButtonType.decelCruise, 15), (ButtonType.decelCruise, 16), (ButtonType.accelCruise, 17)):
+      with self.subTest(button=button, after=after):
+        truck = Truck()
+        truck.run(16, 400)
+        truck.tap(button, after, 16)
+        truck.run(after, 500)
+        self.assertEqual(round(truck.target_mph), after)
+        self.assertFalse(truck.increased or truck.decreased)
+
+  def test_a_tap_released_before_the_cluster_shows(self):
+    # press and release while the PCM still reads 0: the PCM applies the tap; the target takes its result
+    truck = Truck()
+    truck.step(35)                                    # engage
+    truck.step(35, ButtonType.decelCruise, True)
+    truck.step(35, ButtonType.decelCruise, False)     # still before the cluster shows (LATE frames)
+    truck.run(34, 400)                                # the PCM shows its result, 34
+    self.assertEqual(round(truck.target_mph), 34)
+    truck.tap(ButtonType.decelCruise, 33, 34)
+    truck.run(33, 500)
+    self.assertEqual(round(truck.target_mph), 33)
+    self.assertFalse(truck.increased)
+
+  def test_a_tap_released_on_the_frame_the_cluster_shows(self):
+    truck = Truck()
+    truck.run(35, LATE - 1)
+    truck.step(35, ButtonType.decelCruise, True)
+    truck.step(34, ButtonType.decelCruise, False)     # the first non-zero reading is the tap's result
+    truck.run(34, 500)
+    self.assertEqual(round(truck.target_mph), 34)    # counted once
+    self.assertFalse(truck.increased or truck.decreased)
+
+  def test_a_press_held_across_the_first_reading(self):
+    # held from before the cluster shows until well after: the PCM steps down while it is held, the target follows
+    truck = Truck()
+    truck.step(35)
+    truck.step(35, ButtonType.decelCruise, True)
+    for mph in (35, 34, 33, 32, 31, 30):
+      truck.run(mph, 50)
+    truck.step(30, ButtonType.decelCruise, False)
+    truck.run(30, 500)
+    self.assertEqual(round(truck.target_mph), 30)
+    self.assertFalse(truck.increased)
+
+  def test_unknown_and_fault_codes_are_not_a_set_speed(self):
+    # the display signal's 254 (Unknown) and 255 (Fault), decoded as mph
+    for code in (254, 255):
+      with self.subTest(code=code):
+        truck = Truck()
+        truck.run(code, 20, late=0)
+        self.assertEqual(truck.helper.v_cruise_kph, V_CRUISE_UNSET)
+        truck.run(35, 400, late=0)
+        self.assertEqual(round(truck.target_mph), 35)
+        truck.tap(ButtonType.decelCruise, 34, 35)
+        truck.run(34, 40)
+        truck.tap(ButtonType.decelCruise, 33, 34)
+        truck.run(33, 500)
+        self.assertEqual(round(truck.target_mph), 33)
+        self.assertFalse(truck.increased)
+
+  def test_a_code_stored_before_the_engage_is_not_a_set_speed(self):
+    # the PCM mirror runs while openpilot is not engaged and copies whatever the PCM shows
+    truck = Truck()
+    truck.helper.v_cruise_kph = 254 * CV.MPH_TO_KPH
+    truck.run(35, 400, late=0)
+    self.assertEqual(round(truck.target_mph), 35)
+    self.assertFalse(truck.increased)
+
+  def test_a_long_press_from_the_seed_steps_a_whole_5_mph(self):
+    truck = Truck()
+    truck.run(35, 400)
+    truck.step(35, ButtonType.decelCruise, True)
+    truck.run(35, 50)                                 # the first long-press tick
+    self.assertEqual(round(truck.target_mph), 30)
 
   def test_stock_set_speed_handling_is_unchanged(self):
     # the PCM owns the set speed (no ICBM): the target is the PCM's, unset while it reads 0
