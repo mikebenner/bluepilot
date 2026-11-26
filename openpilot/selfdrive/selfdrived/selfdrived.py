@@ -433,9 +433,9 @@ class SelfdriveD:
     no_system_errors = (not has_disable_events) or (len(self.events) == num_events)
     warmup_sec = 5.
     big_model_settling = self.big_model_loading or time.monotonic() < self.big_model_ready_t + warmup_sec
-    # BluePilot (from bp-dev): debounce this catch-all for 200 ms, as the panda safety mismatch check
-    # above already is. A message from another process can arrive a frame or two after the event
-    # that was covering for it clears (seen on Ford going Reverse -> Drive).
+    # BluePilot (from bp-dev): debounce this catch-all for 200 ms (COMM_ISSUE_DEBOUNCE_FRAMES). A message
+    # from another process can arrive a frame or two after the event that was covering for it clears
+    # (seen on Ford going Reverse -> Drive).
     raw_comm_issue = not self.sm.all_checks() and no_system_errors and not big_model_settling  # the load holds modelV2 and friends back on purpose
     self.comm_issue_counter = self.comm_issue_counter + 1 if raw_comm_issue else 0
     if self.comm_issue_counter > COMM_ISSUE_DEBOUNCE_FRAMES:
