@@ -9,7 +9,7 @@ from opendbc.car.structs import car
 from opendbc.car import structs, apply_hysteresis
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_CTRL
-from openpilot.selfdrive.car.cruise import V_CRUISE_MAX  # BluePilot
+from openpilot.selfdrive.car.cruise import is_pcm_code  # BluePilot
 from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.helpers import get_minimum_set_speed
 from openpilot.sunnypilot.selfdrive.car.cruise_ext import CRUISE_BUTTON_TIMER, update_manual_button_timers
 
@@ -89,11 +89,9 @@ class IntelligentCruiseButtonManagement:
     MAX_REASONABLE_TARGET = 145 if self.is_metric else 90
     if self.v_target >= MAX_REASONABLE_TARGET or self.v_target == 0:
       self.v_target = self.v_cruise_cluster
-    # BluePilot: nor is a cluster that shows no set speed: 0, or a reading above the 145 km/h maximum (Ford's display
-    # signal sends 254 (Unknown) and 255 (Fault) as codes, in the car's own unit). Hold: no presses either way until it
-    # shows a set speed again, including a raise already under way.
-    cluster_kph = CS.cruiseState.speedCluster * CV.MS_TO_KPH
-    if cluster_kph == 0 or cluster_kph > V_CRUISE_MAX + 1:
+    # BluePilot: nor is a cluster that shows no set speed: 0, or one of Ford's codes (is_pcm_code). Hold: no presses
+    # either way until it shows a set speed again, including a raise already under way.
+    if CS.cruiseState.speedCluster == 0 or is_pcm_code(CS):
       self.v_target = self.v_cruise_cluster
 
     # BluePilot: engage guard. For ENGAGE_GUARD_TIME after the PCM engages, the target is capped at

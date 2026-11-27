@@ -42,13 +42,13 @@ class Truck:
     self.sent = []
     self.icbm_targets = []
 
-  def step(self, shown: float, button=None, pressed=False, late=LATE, enabled=True, unit=None) -> None:
+  def step(self, shown: float, button=None, pressed=False, late=LATE, enabled=True, unit=None, gas=False) -> None:
     """One 10 ms frame, openpilot engaged unless enabled=False (the PCM's cruise stays on). The display reads 0 for the
     first `late` frames; `unit` overrides the display unit (a car whose display unit differs from openpilot's)."""
     speed = 0.0 if self.frame < late else float(shown) * (unit or self.unit)
     events = [{"type": button, "pressed": pressed}] if button is not None else []
-    CS = car.CarState(vEgo=15.6, cruiseState={"available": True, "enabled": True, "speed": speed, "speedCluster": speed},
-                      buttonEvents=events).as_reader()
+    CS = car.CarState(vEgo=15.6, gasPressed=gas, buttonEvents=events,
+                      cruiseState={"available": True, "enabled": True, "speed": speed, "speedCluster": speed}).as_reader()
     plan = custom.LongitudinalPlanSP()
     if self.limit:
       plan.speedLimit.resolver.speedLimitValid = True
@@ -390,6 +390,74 @@ class TestUnsetTargetSeed(unittest.TestCase):
         truck.run(pcm_after, 500, late=0)
         self.assertEqual(truck.target, want)
         self.assertFalse(truck.increased)
+
+  def test_a_settle_window_does_not_outlive_its_engagement(self):
+    # a press from the unset window, released at 34, then cancel: a minute later, re-engaged at 34, the first Set- is
+    # openpilot's to count again
+    truck = Truck()
+    truck.step(35)
+    truck.step(35, ButtonType.decelCruise, True)
+    truck.step(34, ButtonType.decelCruise, False, late=2)
+    truck.run(34, 6000, late=0, enabled=False)
+    truck.run(34, 2, late=0)
+    truck.tap(ButtonType.decelCruise, 34, 34)          # the PCM refuses; openpilot counts it, ICBM walks the PCM down
+    truck.run(34, 400, late=0)
+    self.assertEqual(truck.target, 33)
+    self.assertFalse(truck.increased)
+
+  def test_a_press_held_through_the_engage(self):
+    # Set- already down on the engage: openpilot is effectively engaged only after the release, and the press is the
+    # PCM's; a long press (to 30) and a tap (to 34, shown just after the release)
+    for hold, after in ((65, 30), (5, 34)):
+      with self.subTest(hold=hold, after=after):
+        truck = Truck()
+        truck.step(35, ButtonType.decelCruise, True)
+        truck.run(35, hold)
+        truck.step(35, ButtonType.decelCruise, False)
+        truck.run(after, 400, late=0)
+        self.assertEqual(truck.target, after)
+        self.assertFalse(truck.increased)
+
+  def test_a_real_set_speed_above_90_still_follows_a_lower_target(self):
+    truck = Truck()
+    truck.run(35, 400)
+    truck.limit = 45
+    truck.run(35, 50)
+    sent = len(truck.sent)
+    truck.run(91, 400, late=0)
+    self.assertEqual(truck.target, 45)
+    self.assertIn(SendButtonState.decrease, truck.sent[sent:])
+    self.assertNotIn(SendButtonState.increase, truck.sent[sent:])
+
+  def test_taps_and_long_presses_at_the_top_read_as_whole_mph(self):
+    # (seed, button, long press, the PCM's result, expected target)
+    for seed, button, long, pcm, want in ((86, ButtonType.accelCruise, False, 87, 87), (86, ButtonType.decelCruise, False, 85, 85),
+                                          (88, ButtonType.accelCruise, False, 89, 89), (90, ButtonType.decelCruise, True, 85, 85),
+                                          (85, ButtonType.accelCruise, True, 90, 90), (72, ButtonType.decelCruise, True, 70, 70)):
+      with self.subTest(seed=seed, button=button, long=long):
+        truck = Truck()
+        truck.run(seed, 400)
+        truck.step(seed, button, True)
+        truck.run(seed, 65 if long else 9)
+        truck.step(pcm, button, False)
+        truck.run(pcm, 400)
+        self.assertEqual(truck.target, want)
+        self.assertFalse(truck.increased and truck.decreased)
+        self.assertNotIn(SendButtonState.decrease if button == ButtonType.accelCruise else SendButtonState.increase, truck.sent[400:])
+
+  def test_a_press_with_the_gas_down_keeps_openpilots_own_result(self):
+    # Set- while overriding with the gas: openpilot sets the target to the current speed (15.6 m/s, 35 mph)
+    truck = Truck()
+    truck.run(30, 400)
+    truck.step(30, ButtonType.decelCruise, True, gas=True)
+    truck.run(30, 9, gas=True)
+    truck.step(30, ButtonType.decelCruise, False, gas=True)
+    self.assertEqual(truck.target, 35)
+
+  def test_a_code_while_disengaged_shows_no_set_speed(self):
+    truck = Truck()
+    truck.step(254, late=0, enabled=False)
+    self.assertEqual(truck.helper.v_cruise_cluster_kph, V_CRUISE_UNSET)
 
   def test_stock_set_speed_handling_is_unchanged(self):
     # the PCM owns the set speed (no ICBM): the target is the PCM's, unset while it reads 0
