@@ -124,15 +124,21 @@ class VCruiseHelper(VCruiseHelperSP):
     as that is a real one (pcm_set_speed). A Set+/Set- press that began in that time is the PCM's to apply: the
     ownership lasts while it is held and PCM_SETTLE_FRAMES after its release, since the display can update a frame or
     two after the button. A Speed Limit Assist write ends it (hand_back_pcm_target). Otherwise openpilot's own logic
-    runs, exactly as before."""
+    runs, exactly as before.
+
+    ICBM's hold is the same thing: a target of 90 mph / 145 km/h or more is no target to ICBM, and it holds the PCM
+    where it is. While it holds the PCM below that (a limit of 85 mph plus a 10% offset, 93.5, with the PCM at 35), a
+    press is the PCM's too, so the target follows the PCM's set speed from that press on (icbm_holds_pcm_below). Before,
+    a Set- took 145 to 143.4 km/h, 89 mph, and ICBM walked the PCM up from 35 to 89, as on the base."""
     held = self.pcm_button_held(CS)
     unset = self.v_cruise_kph == V_CRUISE_UNSET or self.v_cruise_kph > V_CRUISE_MAX
+    hold = held and not unset and self.icbm_holds_pcm_below(CS, is_metric)
     settling = self.pcm_target and self.pcm_settle > 0   # this frame is inside the window
     if self.pcm_target and held:
       self.pcm_settle = PCM_SETTLE_FRAMES
     elif self.pcm_settle > 0:
       self.pcm_settle -= 1
-    if not (unset or (self.pcm_target and (held or settling))):
+    if not (unset or hold or (self.pcm_target and (held or settling))):
       self.pcm_target = False
       return False
 
@@ -145,6 +151,13 @@ class VCruiseHelper(VCruiseHelperSP):
     # that begins on a later frame is openpilot's to count.
     self.pcm_target = self.v_cruise_kph == V_CRUISE_UNSET or held or self.pcm_settle > 0   # after the window's last frame, it ends
     return True
+
+  def icbm_holds_pcm_below(self, CS, is_metric) -> bool:
+    """The target reads ICBM's hold (90 mph / 145 km/h or more, as ICBM rounds it) while the PCM shows a real set speed
+    at least two units under it."""
+    conv, top = (1., 145) if is_metric else (CV.KPH_TO_MPH, 90)
+    pcm = self.pcm_set_speed(CS, is_metric)
+    return round(self.v_cruise_kph * conv) >= top and pcm is not None and round(pcm * conv) <= top - 2
 
   def pcm_set_speed(self, CS, is_metric) -> float | None:
     """The PCM's displayed set speed as a target in km/h, or None when it shows none. Only a real one: Ford's display
@@ -201,11 +214,10 @@ class VCruiseHelper(VCruiseHelperSP):
     a Set- with the gas down, floored at the current speed) could leave the shown mph unchanged, and ICBM then pressed
     the PCM back. With the gas down, a Set- keeps openpilot's floor at the current speed, as before.
 
-    ICBM takes a target of 90 mph or more as no target and holds the PCM where it is; a later Set- to 89 then walks
-    the PCM up from wherever it was held. So a press takes the target to 90 (and the hold) only when the PCM already
-    shows 89 or more, as the driver's own press takes it there; otherwise openpilot's own result tops out at 89 and
-    ICBM brings the PCM along. A target already at 90 mph or more keeps openpilot's own arithmetic, as on the base.
-    Written values (a limit, a gas floor) are left as written."""
+    Near ICBM's hold (a target of 90 mph or more, which ICBM takes as no target) openpilot's own arithmetic is kept
+    exactly, as on the base: from a target already there, and for a press whose result would reach it. A press made
+    while ICBM holds the PCM below the hold is the PCM's anyway (pcm_owns_target). Written values (a limit, a gas floor)
+    are left as written."""
     press = self.pcm_last_press
     if (is_metric or self.custom_acc_enabled or press is None or V_CRUISE_UNSET in (before, self.v_cruise_kph)
         or before > V_CRUISE_MAX or self.v_cruise_kph == before):
@@ -219,8 +231,7 @@ class VCruiseHelper(VCruiseHelperSP):
     else:
       want = was + sign
     if want >= 90:
-      pcm = self.pcm_set_speed(CS, is_metric)
-      want = 90 if pcm is not None and round(pcm * CV.KPH_TO_MPH) >= 89 else 89
+      return
     target = want * CV.MPH_TO_KPH
     if CS.gasPressed and sign < 0:
       target = max(target, CS.vEgo * CV.MS_TO_KPH)
