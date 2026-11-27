@@ -66,6 +66,7 @@ class SpeedLimitAssist:
     self.enabled = self.params.get("SpeedLimitMode", return_default=True) == Mode.assist
     self.long_enabled = False
     self.long_enabled_prev = False
+    self.own_write_conv = None   # BluePilot: see shows_own_write
     self.is_enabled = False
     self.is_active = False
     self.output_v_target = V_CRUISE_UNSET
@@ -113,6 +114,36 @@ class SpeedLimitAssist:
   @property
   def speed_limit_changed(self) -> bool:
     return self._has_speed_limit and bool(self._speed_limit != self.speed_limit_prev)
+
+  # BluePilot
+  @property
+  def shows_own_write(self) -> bool:
+    """Auto-confirm: the set speed now reads exactly the limit this state machine had the cruise helper write (it
+    writes on entering an active state and on a new limit while active), so the change is that write showing up."""
+    return self.auto_confirm and self.own_write_conv is not None and self.v_cruise_cluster_conv == self.own_write_conv
+
+  @property
+  def shows_first_set_speed(self) -> bool:
+    """Auto-confirm: the set speed read as none before (openpilot's unset target reaches here clipped to 145 km/h, 90
+    mph) and reads a value now: the cruise helper taking the PCM's set speed after an engage, not a driver's change,
+    so Speed Limit Assist's activation keeps the timing it had while the target stayed unset."""
+    top = 145 if self.is_metric else 90
+    return self.auto_confirm and self.prev_v_cruise_cluster_conv >= top > self.v_cruise_cluster_conv
+
+  def expect_own_write(self) -> None:
+    """After the state machine: the value the cruise helper writes this time, as this state machine will read it back
+    (the helper stores the limit in tenths of a km/h, at most 145 km/h); cleared by anything else showing up."""
+    if not self.auto_confirm:
+      return
+    wrote = self.state in ACTIVE_STATES and (self._state_prev not in ACTIVE_STATES or
+                                             self.speed_limit_final_last_conv != self.prev_speed_limit_final_last_conv)
+    if wrote:
+      speed_conv = CV.MS_TO_KPH if self.is_metric else CV.MS_TO_MPH
+      kph = min(round(self._speed_limit_final_last * CV.MS_TO_KPH, 1), 145.)
+      self.own_write_conv = round(kph * CV.KPH_TO_MS * speed_conv)
+    elif self.v_cruise_cluster_changed and not self.shows_own_write or self.state not in ACTIVE_STATES:
+      self.own_write_conv = None
+  # End BluePilot
 
   @property
   def v_cruise_cluster_changed(self) -> bool:
@@ -322,12 +353,9 @@ class SpeedLimitAssist:
       else:
         # ACTIVE
         if self.state == SpeedLimitAssistState.active:
-          # BluePilot: with auto-confirm a new limit is applied (the helper writes it) even on the sample where the
-          # set speed shows this state's own last write, which reads as a change; it was marked as seen and lost
-          if self.auto_confirm and self.speed_limit_changed and self._has_speed_limit:
-            pass
-          # End BluePilot
-          elif self.v_cruise_cluster_changed:
+          # BluePilot: with auto-confirm, the set speed showing this state's own last write is not a manual change
+          # (see own_write_conv); read as one, a new limit arriving on that sample was marked as seen and lost
+          if self.v_cruise_cluster_changed and not self.shows_own_write:
             self.state = SpeedLimitAssistState.inactive
 
           elif self.speed_limit_changed and self.apply_confirm_speed_threshold and not self.auto_confirm:
@@ -356,7 +384,9 @@ class SpeedLimitAssist:
     elif self.state == SpeedLimitAssistState.disabled:
       if self.long_enabled and self.enabled:
         # start or reset preActive timer if initially enabled or manual set speed change detected
-        if not self.long_enabled_prev or self.v_cruise_cluster_changed:
+        # BluePilot: with auto-confirm, not for the set speed first showing a value after having none (the PCM's set
+        # speed taken by the cruise helper a few frames after the engage); see shows_first_set_speed
+        if not self.long_enabled_prev or (self.v_cruise_cluster_changed and not self.shows_first_set_speed):
           self.long_engaged_timer = int(DISABLED_GUARD_PERIOD / DT_MDL)
 
         elif self.long_engaged_timer <= 0:
@@ -413,6 +443,7 @@ class SpeedLimitAssist:
       self.is_enabled, self.is_active = self.update_state_machine_non_pcm_long()
 
     self.update_events(events_sp)
+    self.expect_own_write()  # BluePilot
 
     # Update change tracking variables
     self.speed_limit_prev = self._speed_limit

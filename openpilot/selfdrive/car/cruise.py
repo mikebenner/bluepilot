@@ -124,8 +124,11 @@ class VCruiseHelper(VCruiseHelperSP):
       self.pcm_target = False
       return False
 
+    # while a press is held the target stays where it was (once it has a value): the PCM's display moving under the
+    # press read as manual set speed changes to Speed Limit Assist, which restarted its activation guard on each and
+    # wrote its limit only after the release, undoing the press. The PCM's result is taken once it is released.
     set_speed = self.pcm_set_speed(CS, is_metric)
-    if set_speed is not None:
+    if set_speed is not None and (unset or not held):
       self.v_cruise_kph = set_speed
     elif unset:
       self.v_cruise_kph = V_CRUISE_UNSET

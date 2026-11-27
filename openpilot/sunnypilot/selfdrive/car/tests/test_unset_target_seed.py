@@ -16,6 +16,8 @@ from openpilot.common.constants import CV
 from openpilot.selfdrive.car.cruise import VCruiseHelper, V_CRUISE_MAX, V_CRUISE_UNSET, PCM_SETTLE_FRAMES
 from openpilot.sunnypilot.selfdrive.car.cruise_ext import CRUISE_BUTTON_TIMER
 from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.controller import IntelligentCruiseButtonManagement
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist import SpeedLimitAssist
+from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 
 ButtonType = car.CarState.ButtonEvent.Type
 SendButtonState = custom.IntelligentCruiseButtonManagement.SendButtonState
@@ -24,7 +26,7 @@ LATE = 4  # frames after the engage before the PCM's set speed shows
 
 class Truck:
   """Display values (`shown`) are in the display unit: mph, or km/h with metric=True."""
-  def __init__(self, pcm_cruise=True, pcm_cruise_speed=False, op_long=True, metric=False):
+  def __init__(self, pcm_cruise=True, pcm_cruise_speed=False, op_long=True, metric=False, real_sla=False):
     self.CP = structs.CarParams(brand="ford", pcmCruise=pcm_cruise, openpilotLongitudinalControl=op_long).as_reader()
     self.CP_SP = custom.CarParamsSP(pcmCruiseSpeed=pcm_cruise_speed, intelligentCruiseButtonManagementAvailable=True).as_reader()
     self.metric = metric
@@ -42,6 +44,15 @@ class Truck:
     self.sent = []
     self.icbm_targets = []
     self.ego = 15.6   # m/s
+    # real_sla: the real Speed Limit Assist state machine (auto-confirm) decides when the limit is written, sampled at
+    # 20 Hz with its plan reaching the helper on the next frame, instead of being active whenever a limit is set
+    self.sla = None
+    if real_sla:
+      self.sla = SpeedLimitAssist(self.CP, self.CP_SP)
+      self.sla.enabled = True
+      self.sla.is_metric = metric
+    self.plan_next = None
+    self.plan = custom.LongitudinalPlanSP().as_reader()
 
   def step(self, shown: float, button=None, pressed=False, late=LATE, enabled=True, unit=None, gas=False) -> None:
     """One 10 ms frame, openpilot engaged unless enabled=False (the PCM's cruise stays on). The display reads 0 for the
@@ -50,12 +61,27 @@ class Truck:
     events = [{"type": button, "pressed": pressed}] if button is not None else []
     CS = car.CarState(vEgo=self.ego, gasPressed=gas, buttonEvents=events,
                       cruiseState={"available": True, "enabled": True, "speed": speed, "speedCluster": speed}).as_reader()
-    plan = custom.LongitudinalPlanSP()
-    if self.limit:
-      plan.speedLimit.resolver.speedLimitValid = True
-      plan.speedLimit.resolver.speedLimitFinalLast = self.limit * self.unit
-      plan.speedLimit.assist.state = "active"
-    self.helper.update_speed_limit_assist(self.metric, plan.as_reader())
+    if self.sla is not None:
+      if self.plan_next is not None:
+        self.plan, self.plan_next = self.plan_next, None
+      if self.frame % 5 == 0:
+        limit = self.limit * self.unit if self.limit else 0.
+        self.sla.update(enabled, False, self.ego, 0., min(self.helper.v_cruise_cluster_kph, V_CRUISE_MAX) * CV.KPH_TO_MS,
+                        limit, limit, bool(self.limit), 0., EventsSP())
+        self.sla.enabled = True
+        plan = custom.LongitudinalPlanSP()
+        plan.speedLimit.resolver.speedLimitValid = bool(self.limit)
+        plan.speedLimit.resolver.speedLimitFinalLast = limit
+        plan.speedLimit.assist.state = self.sla.state
+        self.plan_next = plan.as_reader()
+    else:
+      plan = custom.LongitudinalPlanSP()
+      if self.limit:
+        plan.speedLimit.resolver.speedLimitValid = True
+        plan.speedLimit.resolver.speedLimitFinalLast = self.limit * self.unit
+        plan.speedLimit.assist.state = "active"
+      self.plan = plan.as_reader()
+    self.helper.update_speed_limit_assist(self.metric, self.plan)
     self.helper.update_v_cruise(CS, enabled, self.metric)
     if enabled and not self.enabled_prev:
       self.helper.initialize_v_cruise(self.CS_prev if self.CS_prev is not None else CS, 0)
@@ -681,6 +707,69 @@ class TestUnsetTargetSeed(unittest.TestCase):
         truck.step(shown, ButtonType.decelCruise, False, late=0)
         self.assertEqual(truck.target, 35)
         self.assertEqual(truck.run_pcm(shown, 1200, late=0), 35)
+
+  def test_a_held_set_minus_after_a_resume_engage_with_speed_limit_assist_deciding(self):
+    # the real Speed Limit Assist decides when to write (posted 50 + 10%: 55). Engaged with Resume, a Set- held from
+    # 0.12 s later, the PCM taking a mph 30 ms after the press and then 1 (or 5) per tick: Speed Limit Assist writes 55
+    # during the hold and the rest of it counts from there, ending as on the base (35; a shorter hold, 50). The display
+    # moving under the PCM-owned press restarted its activation guard, and its first write came after the release,
+    # pressing the PCM back up to 55.
+    for per, frames, want in ((1, 270, 35), (5, 270, 35), (1, 115, 50)):
+      with self.subTest(per=per, frames=frames):
+        truck = Truck(real_sla=True)
+        truck.ego = 55 * CV.MPH_TO_MS
+        truck.limit = 55
+        truck.run(55, 11, late=0, enabled=False)
+        truck.step(55, ButtonType.resumeCruise, True, late=0, enabled=False)
+        truck.run(55, 13, late=0, enabled=False)
+        truck.step(55, ButtonType.resumeCruise, False, late=0)
+        truck.run(55, 11, late=0)
+        shown = 55
+        truck.step(shown, ButtonType.decelCruise, True, late=0)
+        for f in range(frames - 1):
+          if f == 2:
+            shown -= 1
+          elif f % 50 == 48:
+            shown -= per
+          truck.step(shown, late=0)
+        truck.step(shown, ButtonType.decelCruise, False, late=0)
+        self.assertEqual(truck.target, want)
+        self.assertEqual(truck.run_pcm(shown, 1200, late=0), want)
+
+  def test_a_press_just_after_speed_limit_assists_write_holds(self):
+    # engaged at 66 under a 67.9 mph final limit; Speed Limit Assist writes it, and a held Set- ticks to 65 just after:
+    # the driver's 65 holds. Speed Limit Assist read its own write as a manual change, went inactive for a sample,
+    # came back on the next and wrote the limit again over the tick (68).
+    truck = Truck(real_sla=True)
+    truck.ego = 66 * CV.MPH_TO_MS
+    truck.limit = 67.85
+    truck.run(66, 20, late=0, enabled=False)
+    truck.run(66, 10, late=0)
+    truck.step(66, ButtonType.decelCruise, True, late=0)
+    truck.run(66, 92, late=0)
+    truck.step(66, ButtonType.decelCruise, False, late=0)
+    self.assertEqual(truck.target, 65)
+    self.assertEqual(truck.run_pcm(66, 1200, late=0), 65)
+
+  def test_the_first_set_speed_keeps_speed_limit_assists_timing(self):
+    # the target taking the PCM's set speed after an engage is not a manual change to Speed Limit Assist: its first
+    # write comes 0.5 s after the engage either way, the display there before it (taken while disengaged) or arriving
+    # 4 frames after (on the base the target stayed unset; here it restarted the 0.5 s guard, a sample later)
+    for before in (True, False):
+      with self.subTest(display_before_the_engage=before):
+        truck = Truck(real_sla=True)
+        truck.ego = 40 * CV.MPH_TO_MS
+        truck.limit = 55
+        if before:
+          truck.run(40, 20, late=0, enabled=False)
+        start, written = truck.frame, None
+        for _ in range(200):
+          truck.step(40, late=start + (0 if before else 4))
+          if truck.target == 55:
+            written = truck.frame - 1 - start
+            break
+        self.assertIsNotNone(written)
+        self.assertLessEqual(written, 52)
 
   def test_a_press_with_the_gas_down_keeps_openpilots_own_result(self):
     # Set- while overriding with the gas: openpilot sets the target to the current speed (15.6 m/s, 35 mph)

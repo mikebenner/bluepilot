@@ -258,17 +258,47 @@ class TestSpeedLimitAssistAutoConfirm:
     assert sla.state in ACTIVE_STATES
     assert SpeedLimitAssistState.preActive not in self.states
 
+  def _activate(self, sla, limit_mph, set_mph):
+    for _ in range(40):   # the 0.5 s guard after engaging, with margin
+      if sla.state in ACTIVE_STATES:
+        return
+      self._step(sla, limit_mph, set_mph=set_mph, frames=1)
+    assert sla.state in ACTIVE_STATES, self.states
+
+  def _sample(self, sla, posted_mph, final_mph, has_limit, set_mph):
+    """One planner sample with the resolver's current (posted) and retained (final) limits given separately."""
+    sla.update(True, False, set_mph * CV.MPH_TO_MS, 0., set_mph * CV.MPH_TO_MS, posted_mph * CV.MPH_TO_MS,
+               final_mph * CV.MPH_TO_MS, has_limit, 0., EventsSP())
+    sla.enabled = True
+    self.states.append(sla.state)
+
   def test_a_new_limit_on_the_sample_after_a_write_applies(self):
     # the sample after Speed Limit Assist's own write shows that write as a set speed change; a new limit arriving on
     # that same sample was marked as seen and lost, the state going inactive with the old limit as the target
     sla = self._sla()
-    while sla.state not in ACTIVE_STATES:
-      self._step(sla, 66, set_mph=50, frames=1)
+    self._activate(sla, 66, set_mph=50)
     self._step(sla, 44, set_mph=66, frames=1)   # the 66 written, and a new 44 limit, on one sample
     assert sla.state in ACTIVE_STATES
     assert sla.output_v_target == pytest.approx(44 * CV.MPH_TO_MS)
     self._step(sla, 44, set_mph=44)
     assert sla.state in ACTIVE_STATES
+
+  def test_a_press_on_the_sample_a_limit_source_drops_out_holds(self):
+    # the posted limit drops to 0 (the resolver keeps the last final limit) on the sample a driver's Set+ shows: the
+    # driver's set speed holds, as on the base (no new limit to write)
+    sla = self._sla()
+    self._activate(sla, 55, set_mph=55)
+    self._sample(sla, 55, 55, True, set_mph=55)
+    self._sample(sla, 0, 55, True, set_mph=60)
+    assert sla.state == SpeedLimitAssistState.inactive
+
+  def test_a_press_on_the_sample_a_new_limit_arrives_holds(self):
+    # a driver's Set- and a new, higher limit on one sample: the driver's set speed holds, as on the base
+    sla = self._sla()
+    self._activate(sla, 44, set_mph=44)
+    self._sample(sla, 44, 44, True, set_mph=44)
+    self._sample(sla, 71, 71, True, set_mph=43)
+    assert sla.state == SpeedLimitAssistState.inactive
 
   def test_no_limit_means_not_active(self):
     sla = self._sla()
