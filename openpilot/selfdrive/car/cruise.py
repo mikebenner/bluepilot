@@ -73,7 +73,6 @@ class VCruiseHelper(VCruiseHelperSP):
           self._update_v_cruise_non_pcm(CS, _enabled, is_metric)
           if self.CP.pcmCruise:
             self.long_press_moves_5_mph(before, CS, is_metric)
-            self.keep_below_icbm_hold(before, is_metric)
         if self.update_speed_limit_assist_v_cruise_non_pcm():
           if self.CP.pcmCruise:
             self.limit_as_shown(is_metric)
@@ -173,6 +172,7 @@ class VCruiseHelper(VCruiseHelperSP):
       self.pcm_target, self.pcm_settle = True, PCM_SETTLE_FRAMES
     elif self.pcm_target and self.pcm_settle > 0:
       self.pcm_settle -= 1   # a release just before the engage: the window keeps counting, as it would engaged
+      self.pcm_target = self.pcm_settle > 0
     else:
       self.pcm_target, self.pcm_settle = False, 0
 
@@ -196,22 +196,17 @@ class VCruiseHelper(VCruiseHelperSP):
     self.pcm_target, self.pcm_settle = False, 0
     self.pcm_handed_back = True
 
-  def keep_below_icbm_hold(self, before: float, is_metric: bool) -> None:
-    """ICBM takes any target that reads 90 mph / 145 km/h or more as no target and holds the PCM where it is
-    (MAX_REASONABLE_TARGET in its controller). A target openpilot's own steps put there would then stay put until a
-    Set- brought it back under the line, and ICBM would start walking the PCM toward the old high value. So a press
-    never takes openpilot's target past 89 mph / 144 km/h; a PCM showing more is still taken as it is."""
-    top = 144. if is_metric else 89 * CV.MPH_TO_KPH
-    if self.v_cruise_kph != before and self.v_cruise_kph != V_CRUISE_UNSET and self.v_cruise_kph > top:
-      self.v_cruise_kph = float(max(top, min(before, top)))
-
   def limit_as_shown(self, is_metric: bool) -> None:
     """Speed Limit Assist writes its limit in tenths of a km/h; on an imperial car that is not a whole mph, and a
-    1.6 km/h tap from it can leave the shown mph unchanged (ICBM then pressed the PCM back). The written target is
-    the whole mph it shows (the same number Speed Limit Assist compares itself), under ICBM's hold line."""
-    if not is_metric and self.v_cruise_kph != V_CRUISE_UNSET:
-      shown = round(self.v_cruise_kph * CV.KPH_TO_MPH)
-      self.v_cruise_kph = float(np.clip(min(shown, 89) * CV.MPH_TO_KPH, self.v_cruise_min, V_CRUISE_MAX))
+    1.6 km/h tap from it can leave the shown mph unchanged (ICBM then pressed the PCM back). With ordinary increments
+    the written target is the whole mph it shows (the same number Speed Limit Assist compares itself). Left as written
+    at 90 mph or more, where ICBM holds the PCM as it always has, and with custom increments, whose own grid starts
+    from the written value."""
+    if is_metric or self.custom_acc_enabled or self.v_cruise_kph == V_CRUISE_UNSET:
+      return
+    shown = round(self.v_cruise_kph * CV.KPH_TO_MPH)
+    if shown < 90:
+      self.v_cruise_kph = float(max(shown * CV.MPH_TO_KPH, self.v_cruise_min))
 
   def long_press_moves_5_mph(self, before: float, CS, is_metric: bool) -> None:
     """An imperial ICBM car with ordinary increments: a long-press tick the handler applied (pcm_last_press, its own
@@ -225,6 +220,9 @@ class VCruiseHelper(VCruiseHelperSP):
       return
     button, was = press[0], round(before * CV.KPH_TO_MPH)
     want = math.ceil((was + 1) / 5) * 5 if button == ButtonType.accelCruise else math.floor((was - 1) / 5) * 5
+    # never 90: ICBM takes a target of 90 mph or more as no target and holds the PCM wherever it is, and a later Set-
+    # to 89 would start it walking up from there. openpilot's own tick tops out at 89 too (144 km/h).
+    want = min(want, 89)
     target = want * CV.MPH_TO_KPH
     if CS.gasPressed and button != ButtonType.accelCruise:
       target = max(target, CS.vEgo * CV.MS_TO_KPH)

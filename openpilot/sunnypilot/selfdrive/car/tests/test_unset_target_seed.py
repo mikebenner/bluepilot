@@ -631,6 +631,52 @@ class TestUnsetTargetSeed(unittest.TestCase):
     truck.run(35, PCM_SETTLE_FRAMES + 5, late=0)
     self.assertFalse(truck.helper.pcm_target)
 
+  def test_a_limit_of_90_mph_or_more_still_holds_the_pcm(self):
+    # this truck's map limits carry a 10% offset: an 85 mph limit becomes 93.5. As on the installed base, ICBM takes a
+    # target of 90 mph or more as no target and holds the PCM; 88 is followed
+    for limit, end in ((93.5, 35), (90, 35), (88, 88)):
+      with self.subTest(limit=limit):
+        truck = Truck()
+        truck.run(35, 300)
+        truck.limit = limit
+        self.assertEqual(truck.run_pcm(35, 1200), end)
+
+  def test_set_plus_at_the_top_is_not_pressed_back(self):
+    # a 90 mph PCM tapped up (it stays at 90), and 89 tapped up to 90: ICBM presses nothing back down
+    for seed, after in ((90, 90), (89, 90)):
+      with self.subTest(seed=seed):
+        truck = Truck()
+        truck.run(seed, 400)
+        truck.tap(ButtonType.accelCruise, after, seed)
+        self.assertEqual(truck.run_pcm(after, 600), after)
+        self.assertFalse(truck.decreased)
+
+  def test_the_window_ends_on_its_last_frame_across_the_engage(self):
+    # pressed and released while not engaged, the window's last frame is the engage frame (still not effectively
+    # engaged); a tap one frame later is openpilot's to count (the PCM refusing it here)
+    truck = Truck()
+    truck.step(35, late=0, enabled=False)
+    truck.step(35, ButtonType.decelCruise, True, late=0, enabled=False)
+    truck.step(35, ButtonType.decelCruise, False, late=0, enabled=False)
+    truck.run(35, PCM_SETTLE_FRAMES - 1, late=0, enabled=False)
+    truck.step(35, late=0)                              # engaged, effectively from the next frame
+    truck.tap(ButtonType.decelCruise, 35, 35)
+    truck.run(35, 400, late=0)
+    self.assertEqual(truck.target, 34)
+
+  def test_custom_increments_from_a_limit_are_as_before(self):
+    # custom 5 mph taps from this truck's recorded 55:11 limit (49.5 mph): a Set- the PCM takes as 45 stays at 45
+    truck = Truck()
+    truck.helper.custom_acc_enabled, truck.helper.short_increment, truck.helper.long_increment = True, 5, 5
+    truck.run(35, 100)
+    truck.limit = 22.128480911254883 / CV.MPH_TO_MS
+    truck.run(35, 300)
+    shown = truck.run_pcm(35, 400)
+    truck.tap(ButtonType.decelCruise, shown - 5, shown)
+    sent = len(truck.sent)
+    self.assertEqual(truck.run_pcm(shown - 5, 600), shown - 5)
+    self.assertNotIn(SendButtonState.increase, truck.sent[sent:])
+
   def test_a_press_with_the_gas_down_keeps_openpilots_own_result(self):
     # Set- while overriding with the gas: openpilot sets the target to the current speed (15.6 m/s, 35 mph)
     truck = Truck()
