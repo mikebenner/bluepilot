@@ -300,6 +300,35 @@ class TestSpeedLimitAssistAutoConfirm:
     self._sample(sla, 71, 71, True, set_mph=43)
     assert sla.state == SpeedLimitAssistState.inactive
 
+  def _samples_to_active(self, sla, set_kph, posted_mph, final_mph, after_kph):
+    """Engaged with the set speed at set_kph for three samples, then after_kph: samples until Speed Limit Assist is
+    active."""
+    for i in range(40):
+      v = (set_kph if i < 3 else after_kph) * CV.KPH_TO_MS
+      sla.update(True, False, 30 * CV.MPH_TO_MS, 0., v, posted_mph * CV.MPH_TO_MS, final_mph * CV.MPH_TO_MS, True, 0., EventsSP())
+      sla.enabled = True
+      if sla.state in ACTIVE_STATES:
+        return i
+    return None
+
+  def test_a_first_set_speed_is_not_a_manual_change_but_a_press_from_90_is(self):
+    # openpilot's unset target arrives as exactly 145 km/h; a real 90 mph set speed as 144.84. A change from the first
+    # to 89 mph is the target taking the PCM's set speed (the 0.5 s guard keeps running); from the second it is a press
+    # (the guard restarts), as on the base
+    seed = self._samples_to_active(self._sla(), 145., 85, 93.5, 89 * CV.MPH_TO_KPH)
+    press = self._samples_to_active(self._sla(), 90 * CV.MPH_TO_KPH, 85, 93.5, 89 * CV.MPH_TO_KPH)
+    assert seed is not None and press is not None
+    assert press >= seed + 3, (seed, press)
+
+  def test_a_limit_under_the_minimum_then_a_new_one_applies(self):
+    # a 15 mph posted limit (16.5 final) is written as openpilot's 20 mph minimum; a new 35 (38.5) on the sample that
+    # write shows is applied
+    sla = self._sla()
+    self._activate(sla, 16.5, set_mph=25)
+    self._sample(sla, 38.5 / 1.1, 38.5, True, set_mph=20)
+    assert sla.state in ACTIVE_STATES
+    assert sla.output_v_target == pytest.approx(38.5 * CV.MPH_TO_MS)
+
   def test_no_limit_means_not_active(self):
     sla = self._sla()
     self._step(sla, 0, set_mph=40)

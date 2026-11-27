@@ -18,6 +18,8 @@ from openpilot.sunnypilot.selfdrive.car.cruise_ext import CRUISE_BUTTON_TIMER
 from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.controller import IntelligentCruiseButtonManagement
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist import SpeedLimitAssist
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Mode
+from openpilot.common.params import Params
 
 ButtonType = car.CarState.ButtonEvent.Type
 SendButtonState = custom.IntelligentCruiseButtonManagement.SendButtonState
@@ -48,6 +50,9 @@ class Truck:
     # 20 Hz with its plan reaching the helper on the next frame, instead of being active whenever a limit is set
     self.sla = None
     if real_sla:
+      params = Params()   # Speed Limit Assist reads these on construction and every few seconds after
+      params.put("SpeedLimitMode", int(Mode.assist))
+      params.put_bool("IsMetric", metric)
       self.sla = SpeedLimitAssist(self.CP, self.CP_SP)
       self.sla.enabled = True
       self.sla.is_metric = metric
@@ -73,6 +78,8 @@ class Truck:
         plan.speedLimit.resolver.speedLimitValid = bool(self.limit)
         plan.speedLimit.resolver.speedLimitFinalLast = limit
         plan.speedLimit.assist.state = self.sla.state
+        # what ICBM gets in production: the planner's target, the lower of the cruise target and the limit, as Float32
+        plan.vTarget = float(min(min(self.helper.v_cruise_kph, V_CRUISE_MAX) * CV.KPH_TO_MS, self.sla.output_v_target))
         self.plan_next = plan.as_reader()
     else:
       plan = custom.LongitudinalPlanSP()
@@ -86,8 +93,11 @@ class Truck:
     if enabled and not self.enabled_prev:
       self.helper.initialize_v_cruise(self.CS_prev if self.CS_prev is not None else CS, 0)
     self.enabled_prev, self.CS_prev = enabled, CS
-    target = float(min(self.helper.v_cruise_kph, V_CRUISE_MAX)) * CV.KPH_TO_MS
-    self.icbm.run(CS, car.CarControl(enabled=enabled).as_reader(), custom.LongitudinalPlanSP(vTarget=target).as_reader(), self.metric)
+    if self.sla is not None:
+      icbm_plan = self.plan
+    else:
+      icbm_plan = custom.LongitudinalPlanSP(vTarget=float(min(self.helper.v_cruise_kph, V_CRUISE_MAX)) * CV.KPH_TO_MS).as_reader()
+    self.icbm.run(CS, car.CarControl(enabled=enabled).as_reader(), icbm_plan, self.metric)
     self.sent.append(self.icbm.cruise_button)
     self.icbm_targets.append(self.icbm.v_target)
     self.frame += 1
@@ -770,6 +780,61 @@ class TestUnsetTargetSeed(unittest.TestCase):
             break
         self.assertIsNotNone(written)
         self.assertLessEqual(written, 52)
+
+  def test_a_tap_then_a_hold_after_a_resume_engage_presses_nothing_back(self):
+    # 55 before the engage, a 60 mph posted limit (66 final) throughout. Resume released at the engage, a Set- tap at
+    # +0.14..0.24 s (the PCM showing 54 from +0.17 s), then a Set- held from +0.29 s to +2.44 s, the PCM taking a mph per
+    # repeat: nothing is pressed after the release (the target took the tap a frame late, which moved Speed Limit
+    # Assist's first write past the hold's first repeat; ICBM then pressed the PCM back up)
+    truck = Truck(real_sla=True)
+    truck.ego = 55 * CV.MPH_TO_MS
+    truck.limit = 66
+    truck.run(55, 11, late=0, enabled=False)
+    truck.step(55, ButtonType.resumeCruise, True, late=0, enabled=False)
+    truck.run(55, 13, late=0, enabled=False)
+    truck.step(55, ButtonType.resumeCruise, False, late=0)
+    truck.run(55, 13, late=0)
+    shown = 55
+    truck.step(shown, ButtonType.decelCruise, True, late=0)
+    for f in range(9):
+      if f == 2:
+        shown = 54
+      truck.step(shown, late=0)
+    truck.step(shown, ButtonType.decelCruise, False, late=0)
+    truck.run(shown, 4, late=0)
+    truck.step(shown, ButtonType.decelCruise, True, late=0)
+    for f in range(214):
+      if f % 50 == 48:
+        shown -= 1
+      truck.step(shown, late=0)
+    truck.step(shown, ButtonType.decelCruise, False, late=0)
+    sent = len(truck.sent)
+    end = truck.run_pcm(shown, 1200, late=0)
+    self.assertEqual(set(truck.sent[sent:]) - {SendButtonState.none, SendButtonState.decrease}, set())
+    self.assertLessEqual(end, shown)
+
+  def test_a_pcm_owned_hold_follows_the_pcm_at_each_repeat(self):
+    # no limit; Resume, then Set- held, the PCM taking a mph at the press and one per repeat: the target follows the PCM
+    # at each repeat, as openpilot's own handler changes it then (it stayed at 55 to the release)
+    truck = Truck()
+    truck.run(55, 11, late=0, enabled=False)
+    truck.step(55, ButtonType.resumeCruise, True, late=0, enabled=False)
+    truck.run(55, 13, late=0, enabled=False)
+    truck.step(55, ButtonType.resumeCruise, False, late=0)
+    truck.run(55, 11, late=0)
+    shown = 55
+    truck.step(shown, ButtonType.decelCruise, True, late=0)
+    seen = []
+    for f in range(269):
+      if f == 2:
+        shown -= 1
+      elif f % 50 == 46:
+        shown -= 1
+      truck.step(shown, late=0)
+      if f % 50 == 49:   # the handler's repeat frame
+        seen.append((shown, truck.target))
+    self.assertEqual(len(seen), 5)
+    self.assertTrue(all(target == pcm for pcm, target in seen), seen)
 
   def test_a_press_with_the_gas_down_keeps_openpilots_own_result(self):
     # Set- while overriding with the gas: openpilot sets the target to the current speed (15.6 m/s, 35 mph)

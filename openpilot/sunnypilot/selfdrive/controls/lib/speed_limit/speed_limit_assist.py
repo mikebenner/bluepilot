@@ -17,6 +17,7 @@ from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import PCM_LONG_REQUIRED_MAX_SET_SPEED, CONFIRM_SPEED_THRESHOLD
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Mode
+from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.helpers import get_minimum_set_speed  # BluePilot
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.helpers import compare_cluster_target, set_speed_limit_assist_availability
 from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.helpers import icbm_with_op_long
 
@@ -127,19 +128,21 @@ class SpeedLimitAssist:
     """Auto-confirm: the set speed read as none before (openpilot's unset target reaches here clipped to 145 km/h, 90
     mph) and reads a value now: the cruise helper taking the PCM's set speed after an engage, not a driver's change,
     so Speed Limit Assist's activation keeps the timing it had while the target stayed unset."""
-    top = 145 if self.is_metric else 90
-    return self.auto_confirm and self.prev_v_cruise_cluster_conv >= top > self.v_cruise_cluster_conv
+    # by the raw value: openpilot's unset target arrives as exactly 145 km/h, a real 90 mph set speed as 144.84
+    return self.auto_confirm and self.v_cruise_cluster_prev * CV.MS_TO_KPH >= 144.95 > self.v_cruise_cluster * CV.MS_TO_KPH
 
   def expect_own_write(self) -> None:
     """After the state machine: the value the cruise helper writes this time, as this state machine will read it back
-    (the helper stores the limit in tenths of a km/h, at most 145 km/h); cleared by anything else showing up."""
+    (the helper stores the limit in tenths of a km/h, between openpilot's minimum set speed and 145 km/h); cleared by
+    anything else showing up."""
     if not self.auto_confirm:
       return
     wrote = self.state in ACTIVE_STATES and (self._state_prev not in ACTIVE_STATES or
                                              self.speed_limit_final_last_conv != self.prev_speed_limit_final_last_conv)
     if wrote:
       speed_conv = CV.MS_TO_KPH if self.is_metric else CV.MS_TO_MPH
-      kph = min(round(self._speed_limit_final_last * CV.MS_TO_KPH, 1), 145.)
+      minimum = get_minimum_set_speed(self.is_metric) * (1. if self.is_metric else CV.MPH_TO_KPH)
+      kph = min(max(round(self._speed_limit_final_last * CV.MS_TO_KPH, 1), minimum), 145.)
       self.own_write_conv = round(kph * CV.KPH_TO_MS * speed_conv)
     elif self.v_cruise_cluster_changed and not self.shows_own_write or self.state not in ACTIVE_STATES:
       self.own_write_conv = None
