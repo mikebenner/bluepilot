@@ -320,6 +320,19 @@ class TestSpeedLimitAssistAutoConfirm:
     assert seed is not None and press is not None
     assert press >= seed + 3, (seed, press)
 
+  def test_a_valid_set_speed_clamped_to_145_is_not_a_first_set_speed(self):
+    # 90 mph showing at the engage (144.84 km/h), a Set+ clamping it to 145 km/h (what openpilot's unset target also
+    # reads as), then a press to 89: a press (the guard restarts), as on the base
+    clamped = self._sla()
+    for i in range(40):
+      v = (90 * CV.MPH_TO_KPH if i < 2 else 145. if i < 4 else 89 * CV.MPH_TO_KPH) * CV.KPH_TO_MS
+      clamped.update(True, False, 30 * CV.MPH_TO_MS, 0., v, 85 * CV.MPH_TO_MS, 93.5 * CV.MPH_TO_MS, True, 0., EventsSP())
+      clamped.enabled = True
+      if clamped.state in ACTIVE_STATES:
+        break
+    seed = self._samples_to_active(self._sla(), 145., 85, 93.5, 89 * CV.MPH_TO_KPH)
+    assert i >= seed + 3, (seed, i)
+
   def test_a_limit_under_the_minimum_then_a_new_one_applies(self):
     # a 15 mph posted limit (16.5 final) is written as openpilot's 20 mph minimum; a new 35 (38.5) on the sample that
     # write shows is applied

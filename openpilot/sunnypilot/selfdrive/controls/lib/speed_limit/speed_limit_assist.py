@@ -68,6 +68,7 @@ class SpeedLimitAssist:
     self.long_enabled = False
     self.long_enabled_prev = False
     self.own_write_conv = None   # BluePilot: see shows_own_write
+    self.set_speed_seen = False  # BluePilot: see shows_first_set_speed
     self.is_enabled = False
     self.is_active = False
     self.output_v_target = V_CRUISE_UNSET
@@ -128,8 +129,10 @@ class SpeedLimitAssist:
     """Auto-confirm: the set speed read as none before (openpilot's unset target reaches here clipped to 145 km/h, 90
     mph) and reads a value now: the cruise helper taking the PCM's set speed after an engage, not a driver's change,
     so Speed Limit Assist's activation keeps the timing it had while the target stayed unset."""
-    # by the raw value: openpilot's unset target arrives as exactly 145 km/h, a real 90 mph set speed as 144.84
-    return self.auto_confirm and self.v_cruise_cluster_prev * CV.MS_TO_KPH >= 144.95 > self.v_cruise_cluster * CV.MS_TO_KPH
+    # by the raw value: openpilot's unset target arrives as exactly 145 km/h, a real 90 mph set speed as 144.84; and only
+    # while no real set speed has shown since the engage (a real one clamped to 145 by a Set+ reads the same)
+    return (self.auto_confirm and not self.set_speed_seen and
+            self.v_cruise_cluster_prev * CV.MS_TO_KPH >= 144.95 > self.v_cruise_cluster * CV.MS_TO_KPH)
 
   def expect_own_write(self) -> None:
     """After the state machine: the value the cruise helper writes this time, as this state machine will read it back
@@ -447,6 +450,7 @@ class SpeedLimitAssist:
 
     self.update_events(events_sp)
     self.expect_own_write()  # BluePilot
+    self.set_speed_seen = self.long_enabled and (self.set_speed_seen or self.v_cruise_cluster * CV.MS_TO_KPH < 144.95)  # BluePilot
 
     # Update change tracking variables
     self.speed_limit_prev = self._speed_limit

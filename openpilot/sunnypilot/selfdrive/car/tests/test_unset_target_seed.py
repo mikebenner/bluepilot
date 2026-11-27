@@ -18,8 +18,6 @@ from openpilot.sunnypilot.selfdrive.car.cruise_ext import CRUISE_BUTTON_TIMER
 from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.controller import IntelligentCruiseButtonManagement
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist import SpeedLimitAssist
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
-from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Mode
-from openpilot.common.params import Params
 
 ButtonType = car.CarState.ButtonEvent.Type
 SendButtonState = custom.IntelligentCruiseButtonManagement.SendButtonState
@@ -50,10 +48,8 @@ class Truck:
     # 20 Hz with its plan reaching the helper on the next frame, instead of being active whenever a limit is set
     self.sla = None
     if real_sla:
-      params = Params()   # Speed Limit Assist reads these on construction and every few seconds after
-      params.put("SpeedLimitMode", int(Mode.assist))
-      params.put_bool("IsMetric", metric)
       self.sla = SpeedLimitAssist(self.CP, self.CP_SP)
+      self.sla.update_params = lambda: None   # Assist mode and the unit as given, whatever this machine's settings say
       self.sla.enabled = True
       self.sla.is_metric = metric
     self.plan_next = None
@@ -404,10 +400,10 @@ class TestUnsetTargetSeed(unittest.TestCase):
     truck.run(35, 300, late=0)
     self.assertEqual(truck.target, 44)
 
-  def test_a_second_tap_within_the_settle_window_is_the_pcms(self):
-    # a press that began before the target existed, then another one: inside the 0.2 s after the first release the
-    # PCM applies it and the target follows the PCM (taken or refused); after it, openpilot counts it as usual
-    for gap, pcm_after, want in ((PCM_SETTLE_FRAMES - 1, 34, 34), (PCM_SETTLE_FRAMES - 1, 33, 33), (PCM_SETTLE_FRAMES + 5, 33, 33)):
+  def test_a_second_tap_after_the_target_has_a_value_is_openpilots(self):
+    # a press that began before the target existed, then another one once it has a value: openpilot counts the second
+    # one (taken or refused by the PCM), inside the 0.2 s after the first release or after it, as on the base
+    for gap, pcm_after, want in ((PCM_SETTLE_FRAMES - 1, 34, 33), (PCM_SETTLE_FRAMES - 1, 33, 33), (PCM_SETTLE_FRAMES + 5, 33, 33)):
       with self.subTest(gap=gap, pcm_after=pcm_after):
         truck = Truck()
         truck.step(35)
@@ -581,10 +577,10 @@ class TestUnsetTargetSeed(unittest.TestCase):
     self.assertEqual((truck.target, shown), (88, 88))
     self.assertNotIn(SendButtonState.increase, truck.sent[sent:])
 
-  def test_a_press_just_after_the_settle_window_is_openpilots(self):
-    # a press from the unset window released as 35 first shows; a fresh Set- after the window's 20 frames is counted
-    # by openpilot (the PCM refusing it here), one inside it is the PCM's
-    for idle, want in ((PCM_SETTLE_FRAMES - 1, 35), (PCM_SETTLE_FRAMES, 34), (PCM_SETTLE_FRAMES + 1, 34)):
+  def test_a_fresh_press_once_the_target_has_a_value_is_openpilots(self):
+    # a press from the unset window released as 35 first shows; a fresh Set- (the PCM refusing it here) is counted by
+    # openpilot, as on the base, inside the window's 20 frames as well as after them, and ICBM applies it
+    for idle, want in ((PCM_SETTLE_FRAMES - 1, 34), (PCM_SETTLE_FRAMES, 34), (PCM_SETTLE_FRAMES + 1, 34)):
       with self.subTest(idle=idle):
         truck = Truck()
         truck.step(35)
@@ -814,27 +810,77 @@ class TestUnsetTargetSeed(unittest.TestCase):
     self.assertLessEqual(end, shown)
 
   def test_a_pcm_owned_hold_follows_the_pcm_at_each_repeat(self):
-    # no limit; Resume, then Set- held, the PCM taking a mph at the press and one per repeat: the target follows the PCM
-    # at each repeat, as openpilot's own handler changes it then (it stayed at 55 to the release)
+    # no limit; a Set- held from before the display shows (so the PCM's), the PCM taking a mph per repeat: the target
+    # follows the PCM at each repeat, as openpilot's own handler changes it then (it stayed at 55 to the release)
     truck = Truck()
-    truck.run(55, 11, late=0, enabled=False)
-    truck.step(55, ButtonType.resumeCruise, True, late=0, enabled=False)
-    truck.run(55, 13, late=0, enabled=False)
-    truck.step(55, ButtonType.resumeCruise, False, late=0)
-    truck.run(55, 11, late=0)
-    shown = 55
-    truck.step(shown, ButtonType.decelCruise, True, late=0)
-    seen = []
+    truck.step(55, late=8)
+    truck.step(55, ButtonType.decelCruise, True, late=8)
+    shown, seen = 55, []
     for f in range(269):
-      if f == 2:
+      if f % 50 == 46:
         shown -= 1
-      elif f % 50 == 46:
-        shown -= 1
-      truck.step(shown, late=0)
+      truck.step(shown, late=8)
       if f % 50 == 49:   # the handler's repeat frame
         seen.append((shown, truck.target))
     self.assertEqual(len(seen), 5)
     self.assertTrue(all(target == pcm for pcm, target in seen), seen)
+
+  def test_a_tap_whose_display_comes_after_the_release_presses_nothing_back(self):
+    # the tap-then-hold case with the PCM's 54 showing one frame after the tap's release (or after a 100 ms gap): the
+    # tap is openpilot's, counted on its release frame as on the base, and nothing is pressed back after the hold
+    for lag, gap in ((1, 4), (8, 9)):
+      with self.subTest(lag=lag, gap=gap):
+        truck = Truck(real_sla=True)
+        truck.ego = 55 * CV.MPH_TO_MS
+        truck.limit = 66
+        truck.run(55, 11, late=0, enabled=False)
+        truck.step(55, ButtonType.resumeCruise, True, late=0, enabled=False)
+        truck.run(55, 13, late=0, enabled=False)
+        truck.step(55, ButtonType.resumeCruise, False, late=0)
+        truck.run(55, 13, late=0)
+        truck.tap(ButtonType.decelCruise, 55, 55)
+        truck.run(55, lag - 1, late=0) if lag > 1 else None
+        shown = 54
+        truck.run(shown, gap, late=0)
+        truck.step(shown, ButtonType.decelCruise, True, late=0)
+        for f in range(214):
+          if f % 50 == 48:
+            shown -= 1
+          truck.step(shown, late=0)
+        truck.step(shown, ButtonType.decelCruise, False, late=0)
+        sent = len(truck.sent)
+        truck.run_pcm(shown, 1200, late=0)
+        self.assertNotIn(SendButtonState.increase, truck.sent[sent:])
+
+  def test_an_unrelated_button_during_a_held_set_minus_changes_nothing(self):
+    # Speed Limit Assist (posted 50, final 55) and a Set- held from +0.12 s, with the distance button pressed and
+    # released during it: the same as without it (Speed Limit Assist writes 55 during the hold and the rest counts from
+    # there to 35); its release was taken as the Set-'s, which moved the write past the hold
+    ends = []
+    for gap in (False, True):
+      truck = Truck(real_sla=True)
+      truck.ego = 55 * CV.MPH_TO_MS
+      truck.limit = 55
+      truck.run(55, 11, late=0, enabled=False)
+      truck.step(55, ButtonType.resumeCruise, True, late=0, enabled=False)
+      truck.run(55, 13, late=0, enabled=False)
+      truck.step(55, ButtonType.resumeCruise, False, late=0)
+      truck.run(55, 11, late=0)
+      shown = 55
+      truck.step(shown, ButtonType.decelCruise, True, late=0)
+      for f in range(269):
+        if f == 2:
+          shown -= 1
+        elif f % 50 == 48:
+          shown -= 1
+        if gap and f in (7, 22):
+          truck.step(shown, ButtonType.gapAdjustCruise, f == 7, late=0)
+        else:
+          truck.step(shown, late=0)
+      truck.step(shown, ButtonType.decelCruise, False, late=0)
+      ends.append((truck.target, truck.run_pcm(shown, 1200, late=0)))
+    self.assertEqual(ends[0], ends[1])
+    self.assertEqual(ends[0], (35, 35))
 
   def test_a_press_with_the_gas_down_keeps_openpilots_own_result(self):
     # Set- while overriding with the gas: openpilot sets the target to the current speed (15.6 m/s, 35 mph)

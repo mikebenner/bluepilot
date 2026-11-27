@@ -18,6 +18,7 @@ IMPERIAL_INCREMENT = round(CV.MPH_TO_KPH, 1)  # round here to avoid rounding err
 ButtonEvent = car.CarState.ButtonEvent
 ButtonType = car.CarState.ButtonEvent.Type
 CRUISE_LONG_PRESS = 50
+SET_SPEED_BUTTONS = (ButtonType.accelCruise, ButtonType.decelCruise, ButtonType.setCruise, ButtonType.resumeCruise)  # BluePilot
 PCM_SETTLE_FRAMES = 20  # BluePilot: see pcm_owns_target; 0.2 s, as BluePilot 7.1's cluster follower
 
 
@@ -111,10 +112,14 @@ class VCruiseHelper(VCruiseHelperSP):
     toward it. So the PCM owns the target while it is unset (or out of range), and takes the PCM's set speed as soon
     as that is a real one (pcm_set_speed). A Set+/Set- press that began in that time is the PCM's to apply: the
     ownership lasts while it is held and PCM_SETTLE_FRAMES after its release, since the display can update a frame or
-    two after the button. A Speed Limit Assist write ends it (hand_back_pcm_target). Otherwise openpilot's own logic
-    runs, exactly as before."""
+    two after the button. A Speed Limit Assist write ends it (hand_back_pcm_target). A Set+/Set- press that begins
+    while the target has a value is openpilot's, as on the base, even inside a settle window: it ends the window.
+    Otherwise openpilot's own logic runs, exactly as before."""
     held = self.pcm_button_held(CS)
     unset = self.v_cruise_kph == V_CRUISE_UNSET or self.v_cruise_kph > V_CRUISE_MAX
+    if not unset and any(b.type in (ButtonType.accelCruise, ButtonType.decelCruise) and b.pressed for b in CS.buttonEvents):
+      self.pcm_target, self.pcm_settle = False, 0
+      return False
     settling = self.pcm_target and self.pcm_settle > 0   # this frame is inside the window
     if self.pcm_target and held:
       self.pcm_settle = PCM_SETTLE_FRAMES
@@ -128,7 +133,7 @@ class VCruiseHelper(VCruiseHelperSP):
     # release frame and on each long-press tick (once it has a value). Followed on every frame, the PCM's display
     # moving under the press read as a string of manual set speed changes to Speed Limit Assist, which restarted its
     # activation guard on each and wrote its limit only after the release, undoing the press.
-    releasing = any(not b.pressed for b in CS.buttonEvents)
+    releasing = any(not b.pressed and b.type in SET_SPEED_BUTTONS for b in CS.buttonEvents)
     tick = any(timer > 0 and timer % CRUISE_LONG_PRESS == 0 for timer in self.button_timers.values())
     set_speed = self.pcm_set_speed(CS, is_metric)
     if set_speed is not None and (unset or not held or releasing or tick):
