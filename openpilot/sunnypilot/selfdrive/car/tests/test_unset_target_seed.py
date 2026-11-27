@@ -41,13 +41,14 @@ class Truck:
     self.CS_prev = None
     self.sent = []
     self.icbm_targets = []
+    self.ego = 15.6   # m/s
 
   def step(self, shown: float, button=None, pressed=False, late=LATE, enabled=True, unit=None, gas=False) -> None:
     """One 10 ms frame, openpilot engaged unless enabled=False (the PCM's cruise stays on). The display reads 0 for the
     first `late` frames; `unit` overrides the display unit (a car whose display unit differs from openpilot's)."""
     speed = 0.0 if self.frame < late else float(shown) * (unit or self.unit)
     events = [{"type": button, "pressed": pressed}] if button is not None else []
-    CS = car.CarState(vEgo=15.6, gasPressed=gas, buttonEvents=events,
+    CS = car.CarState(vEgo=self.ego, gasPressed=gas, buttonEvents=events,
                       cruiseState={"available": True, "enabled": True, "speed": speed, "speedCluster": speed}).as_reader()
     plan = custom.LongitudinalPlanSP()
     if self.limit:
@@ -675,6 +676,51 @@ class TestUnsetTargetSeed(unittest.TestCase):
     truck.tap(ButtonType.decelCruise, shown - 5, shown)
     sent = len(truck.sent)
     self.assertEqual(truck.run_pcm(shown - 5, 600), shown - 5)
+    self.assertNotIn(SendButtonState.increase, truck.sent[sent:])
+
+  def test_a_held_set_plus_keeps_a_high_limit_hold(self):
+    # a map limit with this truck's 10% offset (93.5 mph) holds the PCM at 35. A held Set+ (one long-press tick) that
+    # the PCM takes to 40 (or 36) keeps the hold, as on the base: no automated increases. With the PCM already at 90,
+    # a held Set+ is not pressed back to 89.
+    for seed, after in ((35, 40), (35, 36), (90, 90)):
+      with self.subTest(seed=seed, after=after):
+        truck = Truck()
+        truck.run(seed, 300)
+        truck.limit = 93.5
+        self.assertEqual(truck.run_pcm(seed, 800), seed)
+        sent = len(truck.sent)
+        truck.step(seed, ButtonType.accelCruise, True)
+        truck.run(seed, 54)
+        truck.step(after, ButtonType.accelCruise, False)
+        self.assertEqual(truck.run_pcm(after, 1000), after)
+        self.assertGreaterEqual(truck.target, 90)
+        self.assertEqual(set(truck.sent[sent:]) - {SendButtonState.none}, set())
+
+  def test_a_long_set_plus_from_89_reaches_the_hold(self):
+    # from 89, a held Set+ is 90 and ICBM's hold, as the base's tick: the PCM at 90 from the driver's own hold stays
+    truck = Truck()
+    truck.run(89, 400)
+    truck.step(89, ButtonType.accelCruise, True)
+    truck.run(89, 54)
+    truck.step(90, ButtonType.accelCruise, False)
+    self.assertEqual(truck.run_pcm(90, 600), 90)
+    self.assertFalse(truck.decreased)
+
+  def test_a_tap_after_the_gas_floor_moves_a_whole_mph(self):
+    # Set- with the gas down at 70.0 km/h (43.5 mph) from 40: the target is the 43 the PCM shows. With the gas released,
+    # a Set- the PCM takes to 42 stays at 42 (it was 68.4 km/h, still 43, and ICBM pressed the PCM back)
+    truck = Truck()
+    truck.run(40, 400)
+    truck.ego = 70.0 / 3.6
+    truck.step(40, ButtonType.decelCruise, True, gas=True)
+    truck.run(40, 9, gas=True)
+    truck.step(43, ButtonType.decelCruise, False, gas=True)
+    truck.run(43, 150, gas=True)
+    self.assertEqual(truck.target, 43)
+    truck.run(43, 150)
+    sent = len(truck.sent)
+    truck.tap(ButtonType.decelCruise, 42, 43)
+    self.assertEqual((truck.run_pcm(42, 600), truck.target), (42, 42))
     self.assertNotIn(SendButtonState.increase, truck.sent[sent:])
 
   def test_a_press_with_the_gas_down_keeps_openpilots_own_result(self):
