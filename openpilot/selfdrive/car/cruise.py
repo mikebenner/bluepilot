@@ -50,7 +50,6 @@ class VCruiseHelper(VCruiseHelperSP):
     self.pcm_target = False
     self.pcm_settle = 0
     self.pcm_handed_back = False
-    self.pcm_last_press = None
     # End BluePilot
 
   @property
@@ -69,10 +68,7 @@ class VCruiseHelper(VCruiseHelperSP):
         # if stock cruise is completely disabled, then we can use our own set speed logic
         # BluePilot: on a car whose PCM holds the set speed, the target can be the PCM's for a while (see pcm_owns_target)
         if not (self.CP.pcmCruise and self.pcm_owns_target(CS, is_metric)):
-          before, self.pcm_last_press = self.v_cruise_kph, None
           self._update_v_cruise_non_pcm(CS, _enabled, is_metric)
-          if self.CP.pcmCruise:
-            self.press_moves_shown_mph(before, CS, is_metric)
         if self.update_speed_limit_assist_v_cruise_non_pcm() and self.pcm_target:
           self.hand_back_pcm_target()
         # End BluePilot
@@ -124,21 +120,15 @@ class VCruiseHelper(VCruiseHelperSP):
     as that is a real one (pcm_set_speed). A Set+/Set- press that began in that time is the PCM's to apply: the
     ownership lasts while it is held and PCM_SETTLE_FRAMES after its release, since the display can update a frame or
     two after the button. A Speed Limit Assist write ends it (hand_back_pcm_target). Otherwise openpilot's own logic
-    runs, exactly as before.
-
-    ICBM's hold is the same thing: a target of 90 mph / 145 km/h or more is no target to ICBM, and it holds the PCM
-    where it is. While it holds the PCM below that (a limit of 85 mph plus a 10% offset, 93.5, with the PCM at 35), a
-    press is the PCM's too, so the target follows the PCM's set speed from that press on (icbm_holds_pcm_below). Before,
-    a Set- took 145 to 143.4 km/h, 89 mph, and ICBM walked the PCM up from 35 to 89, as on the base."""
+    runs, exactly as before."""
     held = self.pcm_button_held(CS)
     unset = self.v_cruise_kph == V_CRUISE_UNSET or self.v_cruise_kph > V_CRUISE_MAX
-    hold = held and not unset and self.icbm_holds_pcm_below(CS, is_metric)
     settling = self.pcm_target and self.pcm_settle > 0   # this frame is inside the window
     if self.pcm_target and held:
       self.pcm_settle = PCM_SETTLE_FRAMES
     elif self.pcm_settle > 0:
       self.pcm_settle -= 1
-    if not (unset or hold or (self.pcm_target and (held or settling))):
+    if not (unset or (self.pcm_target and (held or settling))):
       self.pcm_target = False
       return False
 
@@ -151,13 +141,6 @@ class VCruiseHelper(VCruiseHelperSP):
     # that begins on a later frame is openpilot's to count.
     self.pcm_target = self.v_cruise_kph == V_CRUISE_UNSET or held or self.pcm_settle > 0   # after the window's last frame, it ends
     return True
-
-  def icbm_holds_pcm_below(self, CS, is_metric) -> bool:
-    """The target reads ICBM's hold (90 mph / 145 km/h or more, as ICBM rounds it) while the PCM shows a real set speed
-    at least two units under it."""
-    conv, top = (1., 145) if is_metric else (CV.KPH_TO_MPH, 90)
-    pcm = self.pcm_set_speed(CS, is_metric)
-    return round(self.v_cruise_kph * conv) >= top and pcm is not None and round(pcm * conv) <= top - 2
 
   def pcm_set_speed(self, CS, is_metric) -> float | None:
     """The PCM's displayed set speed as a target in km/h, or None when it shows none. Only a real one: Ford's display
@@ -206,36 +189,6 @@ class VCruiseHelper(VCruiseHelperSP):
     self.pcm_target, self.pcm_settle = False, 0
     self.pcm_handed_back = True
 
-  def press_moves_shown_mph(self, before: float, CS, is_metric: bool) -> None:
-    """An imperial ICBM car with ordinary increments: a press the handler applied (pcm_last_press, its own tap /
-    long-press decision) moves the target from the whole mph the driver reads, as the PCM moves its own set speed: a
-    tap one mph, a long-press tick to the next multiple of 5 mph in the pressed direction. openpilot's arithmetic
-    (1.6 km/h, an 8 km/h grid) from a value that is not a whole mph (one Speed Limit Assist wrote, 62.0 km/h for 39 mph;
-    a Set- with the gas down, floored at the current speed) could leave the shown mph unchanged, and ICBM then pressed
-    the PCM back. With the gas down, a Set- keeps openpilot's floor at the current speed, as before.
-
-    Near ICBM's hold (a target of 90 mph or more, which ICBM takes as no target) openpilot's own arithmetic is kept
-    exactly, as on the base: from a target already there, and for a press whose result would reach it. A press made
-    while ICBM holds the PCM below the hold is the PCM's anyway (pcm_owns_target). Written values (a limit, a gas floor)
-    are left as written."""
-    press = self.pcm_last_press
-    if (is_metric or self.custom_acc_enabled or press is None or V_CRUISE_UNSET in (before, self.v_cruise_kph)
-        or before > V_CRUISE_MAX or self.v_cruise_kph == before):
-      return
-    button, long_press = press
-    sign, was = CRUISE_INTERVAL_SIGN[button], round(before * CV.KPH_TO_MPH)
-    if was >= 90:
-      return
-    if long_press:
-      want = math.ceil((was + 1) / 5) * 5 if sign > 0 else math.floor((was - 1) / 5) * 5
-    else:
-      want = was + sign
-    if want >= 90:
-      return
-    target = want * CV.MPH_TO_KPH
-    if CS.gasPressed and sign < 0:
-      target = max(target, CS.vEgo * CV.MS_TO_KPH)
-    self.v_cruise_kph = float(np.clip(target, self.v_cruise_min, V_CRUISE_MAX))
   # End BluePilot
 
   def _update_v_cruise_non_pcm(self, CS, enabled, is_metric):
@@ -280,7 +233,6 @@ class VCruiseHelper(VCruiseHelperSP):
     if self.update_speed_limit_assist_pre_active_confirmed(button_type):
       return
 
-    self.pcm_last_press = (button_type, long_press)  # BluePilot: see press_moves_shown_mph
     long_press, v_cruise_delta = VCruiseHelperSP.update_v_cruise_delta(self, long_press, v_cruise_delta)
     if long_press and self.v_cruise_kph % v_cruise_delta != 0:  # partial interval
       self.v_cruise_kph = CRUISE_NEAREST_FUNC[button_type](self.v_cruise_kph / v_cruise_delta) * v_cruise_delta
