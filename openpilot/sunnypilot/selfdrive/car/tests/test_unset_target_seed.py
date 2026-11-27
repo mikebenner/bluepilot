@@ -429,11 +429,12 @@ class TestUnsetTargetSeed(unittest.TestCase):
     self.assertIn(SendButtonState.decrease, truck.sent[sent:])
     self.assertNotIn(SendButtonState.increase, truck.sent[sent:])
 
-  def test_taps_and_long_presses_at_the_top_read_as_whole_mph(self):
-    # (seed, button, long press, the PCM's result, expected target)
+  def test_taps_at_the_top_and_a_long_press_read_as_whole_mph(self):
+    # (seed, button, long press, the PCM's result, expected target). Known, not covered: a long press at 85-90 mph
+    # follows openpilot's own 8 km/h grid, which is a mph off there (90 -> 89, 85 -> 89).
     for seed, button, long, pcm, want in ((86, ButtonType.accelCruise, False, 87, 87), (86, ButtonType.decelCruise, False, 85, 85),
-                                          (88, ButtonType.accelCruise, False, 89, 89), (90, ButtonType.decelCruise, True, 85, 85),
-                                          (85, ButtonType.accelCruise, True, 90, 90), (72, ButtonType.decelCruise, True, 70, 70)):
+                                          (88, ButtonType.accelCruise, False, 89, 89), (89, ButtonType.decelCruise, False, 88, 88),
+                                          (72, ButtonType.decelCruise, True, 70, 70), (35, ButtonType.accelCruise, True, 40, 40)):
       with self.subTest(seed=seed, button=button, long=long):
         truck = Truck()
         truck.run(seed, 400)
@@ -444,6 +445,50 @@ class TestUnsetTargetSeed(unittest.TestCase):
         self.assertEqual(truck.target, want)
         self.assertFalse(truck.increased and truck.decreased)
         self.assertNotIn(SendButtonState.decrease if button == ButtonType.accelCruise else SendButtonState.increase, truck.sent[400:])
+
+  def test_a_release_on_the_long_press_boundary(self):
+    # the handler decides: released with its timer at 49 or 50 it is a tap (one mph), at 51 the long-press tick at 50
+    # has fired (five mph); ICBM never presses against the driver
+    for button, sign in ((ButtonType.accelCruise, 1), (ButtonType.decelCruise, -1)):
+      for frames_held, want in ((48, 35 + sign), (49, 35 + sign), (50, 35 + 5 * sign)):
+        with self.subTest(button=button, frames_held=frames_held):
+          truck = Truck()
+          truck.run(35, 400)
+          truck.step(35, button, True)
+          truck.run(35, frames_held)
+          truck.step(35 + sign, button, False)
+          truck.run(35 + sign, 400)
+          self.assertEqual(truck.target, want)
+          self.assertNotIn(SendButtonState.decrease if sign > 0 else SendButtonState.increase, truck.sent)
+
+  def test_a_release_just_before_the_engage(self):
+    # the press and its release happen while openpilot is not engaged; it engages on the next frame and the PCM's
+    # display shows the press's result a frame later. Ford reports a Set- pressed before the PCM engaged as Set.
+    for button in (ButtonType.decelCruise, ButtonType.setCruise):
+      with self.subTest(button=button):
+        truck = Truck()
+        truck.run(35, 5, late=0, enabled=False)
+        truck.step(35, button, True, late=0, enabled=False)
+        truck.run(35, 64, late=0, enabled=False)
+        truck.step(35, button, False, late=0, enabled=False)
+        truck.step(35, late=0)                          # engaged
+        truck.run(30, 400, late=0)
+        self.assertEqual(truck.target, 30)
+        self.assertFalse(truck.increased)
+
+  def test_a_tap_up_from_86_with_custom_increments_or_the_gas(self):
+    for custom_steps, gas in ((True, False), (False, True)):
+      with self.subTest(custom_steps=custom_steps, gas=gas):
+        truck = Truck()
+        if custom_steps:
+          truck.helper.custom_acc_enabled, truck.helper.short_increment, truck.helper.long_increment = True, 1, 5
+        truck.run(86, 400)
+        truck.step(86, ButtonType.accelCruise, True, gas=gas)
+        truck.run(86, 9, gas=gas)
+        truck.step(87, ButtonType.accelCruise, False, gas=gas)
+        truck.run(87, 400)
+        self.assertEqual(truck.target, 87)
+        self.assertFalse(truck.decreased)
 
   def test_a_press_with_the_gas_down_keeps_openpilots_own_result(self):
     # Set- while overriding with the gas: openpilot sets the target to the current speed (15.6 m/s, 35 mph)
