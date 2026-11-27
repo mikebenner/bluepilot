@@ -697,7 +697,7 @@ class TestUnsetTargetSeed(unittest.TestCase):
         self.assertEqual(set(truck.sent[sent:]) - {SendButtonState.none}, set())
 
   def test_a_long_set_plus_from_89_reaches_the_hold(self):
-    # from 89, a held Set+ is 90 and ICBM's hold, as the base's tick: the PCM at 90 from the driver's own hold stays
+    # from 89 with the PCM at 89, a held Set+ is 90 and ICBM's hold: the PCM at 90 from the driver's own hold stays
     truck = Truck()
     truck.run(89, 400)
     truck.step(89, ButtonType.accelCruise, True)
@@ -705,6 +705,50 @@ class TestUnsetTargetSeed(unittest.TestCase):
     truck.step(90, ButtonType.accelCruise, False)
     self.assertEqual(truck.run_pcm(90, 600), 90)
     self.assertFalse(truck.decreased)
+
+  def test_a_set_minus_after_a_long_set_plus_near_the_top_presses_nothing_up(self):
+    # an 88 mph limit (an 80 mph map limit with this truck's 10% offset) while the PCM is at 65; a Set+ tap, then a held
+    # Set+ the PCM takes by only 1 or 5 mph: openpilot's target stops at 89 (not the hold) and ICBM brings the PCM up
+    # after the release, in the driver's direction. A Set- the PCM takes is then a step down with no press back up.
+    for manual in (1, 5):
+      with self.subTest(manual=manual):
+        truck = Truck()
+        truck.limit = 65
+        shown = truck.run_pcm(65, 800)
+        truck.limit = 88
+        shown = truck.run_pcm(shown, 25)
+        truck.tap(ButtonType.accelCruise, shown + 1, shown)
+        shown = truck.run_pcm(shown + 1, 30)
+        truck.step(shown, ButtonType.accelCruise, True)
+        truck.run(shown, 49)
+        truck.run(shown + manual, 5)
+        truck.step(shown + manual, ButtonType.accelCruise, False)
+        self.assertEqual(truck.target, 89)
+        shown = truck.run_pcm(shown + manual, 900)
+        self.assertEqual(shown, 89)
+        sent = len(truck.sent)
+        truck.tap(ButtonType.decelCruise, shown - 1, shown)
+        self.assertEqual((truck.run_pcm(shown - 1, 900), truck.target), (88, 88))
+        self.assertNotIn(SendButtonState.increase, truck.sent[sent:])
+
+  def test_a_long_set_plus_from_a_recorded_limit_into_the_top(self):
+    # this truck's recorded 55:11 limit (49.5 mph); Set+ held for nine ticks, the PCM taking one mph per tick: the
+    # target stops at 89, the PCM follows, and a Set- is a step down with no press back up
+    truck = Truck()
+    truck.run(50, 100)
+    truck.limit = 22.128480911254883 / CV.MPH_TO_MS
+    shown = truck.run_pcm(50, 400)
+    truck.step(shown, ButtonType.accelCruise, True)
+    for _ in range(9):
+      truck.run(shown, 50)
+      shown += 1
+    truck.step(shown, ButtonType.accelCruise, False)
+    self.assertEqual(truck.target, 89)
+    shown = truck.run_pcm(shown, 900)
+    sent = len(truck.sent)
+    truck.tap(ButtonType.decelCruise, shown - 1, shown)
+    self.assertEqual(truck.run_pcm(shown - 1, 900), 88)
+    self.assertNotIn(SendButtonState.increase, truck.sent[sent:])
 
   def test_a_tap_after_the_gas_floor_moves_a_whole_mph(self):
     # Set- with the gas down at 70.0 km/h (43.5 mph) from 40: the target is the 43 the PCM shows. With the gas released,
@@ -717,6 +761,7 @@ class TestUnsetTargetSeed(unittest.TestCase):
     truck.step(43, ButtonType.decelCruise, False, gas=True)
     truck.run(43, 150, gas=True)
     self.assertEqual(truck.target, 43)
+    self.assertAlmostEqual(float(truck.helper.v_cruise_kph), 70.0, places=3)   # the floor at the current speed, as written
     truck.run(43, 150)
     sent = len(truck.sent)
     truck.tap(ButtonType.decelCruise, 42, 43)
