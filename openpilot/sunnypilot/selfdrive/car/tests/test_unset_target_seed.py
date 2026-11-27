@@ -490,6 +490,70 @@ class TestUnsetTargetSeed(unittest.TestCase):
         self.assertEqual(truck.target, 87)
         self.assertFalse(truck.decreased)
 
+  def test_a_long_press_from_a_limit_moves_a_whole_5_mph(self):
+    # targets Speed Limit Assist wrote, from this truck's recorded limits (54:5: 44 mph, 55:11: 50 mph): off openpilot's
+    # 8 km/h long-press grid; a long press still moves the shown mph to the next multiple of 5 and ICBM follows it
+    for limit_ms, tap, hold, pcm, want in ((19.66975975036621, ButtonType.accelCruise, ButtonType.decelCruise, 40, 40),
+                                           (22.128480911254883, None, ButtonType.accelCruise, 55, 55)):
+      with self.subTest(limit_ms=limit_ms):
+        truck = Truck()
+        truck.run(35, 100)
+        truck.limit = limit_ms / CV.MPH_TO_MS
+        truck.run(35, 300)
+        start = truck.target
+        if tap is not None:
+          truck.tap(tap, start + 1, start)
+          truck.run(start + 1, 100)
+          start += 1
+        truck.step(start, hold, True)
+        truck.run(start, 65)
+        truck.step(pcm, hold, False)
+        sent = len(truck.sent)
+        truck.run(pcm, 400)
+        self.assertEqual(truck.target, want)
+        self.assertNotIn(SendButtonState.increase if hold == ButtonType.decelCruise else SendButtonState.decrease, truck.sent[sent:])
+
+  def test_a_press_that_begins_after_the_seed_is_openpilots(self):
+    # the display first shows 35 on frame 4; a Set- from frame 5 is counted by openpilot (the PCM refusing it here)
+    for frames, want in ((65, 30), (9, 34)):
+      with self.subTest(frames=frames):
+        truck = Truck()
+        truck.run(35, LATE + 1)
+        truck.step(35, ButtonType.decelCruise, True)
+        truck.run(35, frames)
+        truck.step(35, ButtonType.decelCruise, False)
+        truck.run(35, 400)
+        self.assertEqual(truck.target, want)
+        self.assertFalse(truck.increased)
+
+  def test_the_last_frame_of_the_window_for_either_button_name(self):
+    # pressed and released while openpilot is not engaged, engaged on the next frame, the display showing the result
+    # on the window's last frame; Ford names the same physical Set- Set or Set- depending on the PCM at the press
+    for button in (ButtonType.decelCruise, ButtonType.setCruise):
+      with self.subTest(button=button):
+        truck = Truck()
+        truck.run(35, 5, late=0, enabled=False)
+        truck.step(35, button, True, late=0, enabled=False)
+        truck.run(35, 64, late=0, enabled=False)
+        truck.step(35, button, False, late=0, enabled=False)
+        truck.run(35, PCM_SETTLE_FRAMES - 1, late=0)
+        truck.run(30, 400, late=0)
+        self.assertEqual(truck.target, 30)
+        self.assertFalse(truck.increased)
+
+  def test_gas_held_taps_down_from_87(self):
+    # each tap with the gas down; the current speed (35 mph) is below the target, so it sets no floor
+    truck = Truck()
+    truck.run(87, 400)
+    for after, before in ((86, 87), (85, 86)):
+      truck.step(before, ButtonType.decelCruise, True, gas=True)
+      truck.run(before, 9, gas=True)
+      truck.step(after, ButtonType.decelCruise, False, gas=True)
+      truck.run(after, 40)
+    truck.run(85, 400)
+    self.assertEqual(truck.target, 85)
+    self.assertFalse(truck.increased)
+
   def test_a_press_with_the_gas_down_keeps_openpilots_own_result(self):
     # Set- while overriding with the gas: openpilot sets the target to the current speed (15.6 m/s, 35 mph)
     truck = Truck()
