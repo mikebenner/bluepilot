@@ -322,7 +322,12 @@ class SpeedLimitAssist:
       else:
         # ACTIVE
         if self.state == SpeedLimitAssistState.active:
-          if self.v_cruise_cluster_changed:
+          # BluePilot: with auto-confirm a new limit is applied (the helper writes it) even on the sample where the
+          # set speed shows this state's own last write, which reads as a change; it was marked as seen and lost
+          if self.auto_confirm and self.speed_limit_changed and self._has_speed_limit:
+            pass
+          # End BluePilot
+          elif self.v_cruise_cluster_changed:
             self.state = SpeedLimitAssistState.inactive
 
           elif self.speed_limit_changed and self.apply_confirm_speed_threshold and not self.auto_confirm:

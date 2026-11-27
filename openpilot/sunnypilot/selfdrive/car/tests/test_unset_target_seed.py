@@ -249,8 +249,9 @@ class TestUnsetTargetSeed(unittest.TestCase):
 
   def test_a_limit_written_during_a_held_press_stays(self):
     # Speed Limit Assist becomes active while a press from the PCM-owned window is held: its limit is the target, and
-    # the press is not counted on top of it at the release
-    for limit in (38, 55):
+    # the rest of the press goes on from it with openpilot's own arithmetic, as on the base (here its long-press tick:
+    # 38 -> 40, 55 -> 60 on the 8 km/h grid)
+    for limit, want in ((38, 40), (55, 60)):
       with self.subTest(limit=limit):
         truck = Truck()
         truck.step(20)
@@ -260,10 +261,11 @@ class TestUnsetTargetSeed(unittest.TestCase):
         truck.run(21, 30)
         truck.step(21, ButtonType.accelCruise, False)
         truck.run(21, 300)
-        self.assertEqual(truck.target, limit)
+        self.assertEqual(truck.target, want)
 
   def test_a_limit_equal_to_the_display_ends_the_ownership(self):
-    # metric: a 90 km/h display and a 90 km/h limit give the same target value; the write itself hands it back
+    # metric: a 90 km/h display and a 90 km/h limit give the same target value; the write itself hands it back, and the
+    # tap released after it is counted on top of it (91), as on the base
     truck = Truck(metric=True)
     truck.step(90)
     truck.step(90, ButtonType.accelCruise, True)
@@ -273,7 +275,7 @@ class TestUnsetTargetSeed(unittest.TestCase):
     truck.run(95, 8)
     truck.step(95, ButtonType.accelCruise, False)
     truck.run(95, 320)
-    self.assertEqual(truck.target, 90)
+    self.assertEqual(truck.target, 91)
 
   def test_a_low_limit_stays_the_target(self):
     # a limit under openpilot's 20 mph minimum is written as the minimum; it is not replaced by the display, and a
@@ -355,6 +357,7 @@ class TestUnsetTargetSeed(unittest.TestCase):
     self.assertEqual(truck.helper.v_cruise_kph, 145.)
 
   def test_a_limit_written_on_the_frame_a_press_begins(self):
+    # the limit (45) is the target, and the Set- released after it is counted on top of it, as on the base
     truck = Truck()
     truck.run(35, 60, late=60)                        # no display yet
     truck.limit = 45
@@ -363,7 +366,7 @@ class TestUnsetTargetSeed(unittest.TestCase):
     truck.run(35, 6, late=0)
     truck.step(35, ButtonType.decelCruise, False, late=0)
     truck.run(35, 300, late=0)
-    self.assertEqual(truck.target, 45)
+    self.assertEqual(truck.target, 44)
 
   def test_a_second_tap_within_the_settle_window_is_the_pcms(self):
     # a press that began before the target existed, then another one: inside the 0.2 s after the first release the
@@ -654,6 +657,30 @@ class TestUnsetTargetSeed(unittest.TestCase):
         truck.step(90, ButtonType.accelCruise, False)
         self.assertEqual(truck.run_pcm(90, 600), 90)
         self.assertFalse(truck.decreased)
+
+  def test_a_held_set_minus_after_a_resume_engage_goes_on_from_the_limit(self):
+    # engaged with Resume (released on the engage frame), a Set- held from 0.12 s later, and Speed Limit Assist writing
+    # 55 mph during the hold: the hold's later ticks count from 55 (to 35), as on the base. They were ignored for the
+    # rest of the hold, and ICBM pressed the PCM back up to 55 after the release.
+    for per in (1, 5):
+      with self.subTest(per=per):
+        truck = Truck()
+        truck.run(55, 11, late=0, enabled=False)
+        truck.step(55, ButtonType.resumeCruise, True, late=0, enabled=False)
+        truck.run(55, 13, late=0, enabled=False)
+        truck.step(55, ButtonType.resumeCruise, False, late=0)
+        truck.run(55, 11, late=0)
+        shown = 55
+        truck.step(shown, ButtonType.decelCruise, True, late=0)
+        for f in range(269):
+          if f == 39:
+            truck.limit = 55
+          if f % 50 == 48:
+            shown -= per
+          truck.step(shown, late=0)
+        truck.step(shown, ButtonType.decelCruise, False, late=0)
+        self.assertEqual(truck.target, 35)
+        self.assertEqual(truck.run_pcm(shown, 1200, late=0), 35)
 
   def test_a_press_with_the_gas_down_keeps_openpilots_own_result(self):
     # Set- while overriding with the gas: openpilot sets the target to the current speed (15.6 m/s, 35 mph)

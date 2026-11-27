@@ -49,7 +49,6 @@ class VCruiseHelper(VCruiseHelperSP):
     # BluePilot: see pcm_owns_target
     self.pcm_target = False
     self.pcm_settle = 0
-    self.pcm_handed_back = False
     # End BluePilot
 
   @property
@@ -100,13 +99,6 @@ class VCruiseHelper(VCruiseHelperSP):
 
     if not self.CP.pcmCruise or not self.CP_SP.pcmCruiseSpeed:
       self.update_button_timers(CS, enabled)
-      # BluePilot: see hand_back_pcm_target; after the timers, so a press that began on this frame is included
-      if self.pcm_handed_back:
-        self.pcm_handed_back = False
-        for button, timer in self.button_timers.items():
-          if timer > 0:
-            self.button_change_states[button]["enabled"] = False
-      # End BluePilot
 
   # BluePilot
   def pcm_owns_target(self, CS, is_metric) -> bool:
@@ -183,11 +175,9 @@ class VCruiseHelper(VCruiseHelperSP):
             or any(b.type in (*set_resume, ButtonType.accelCruise, ButtonType.decelCruise) and b.pressed for b in CS.buttonEvents))
 
   def hand_back_pcm_target(self) -> None:
-    """Speed Limit Assist wrote the target: it is openpilot's again. A press held now, including one that began on
-    this frame, was the PCM's to apply, so its release is not counted on top of the limit (marked in update_v_cruise
-    once this frame's button events are registered)."""
+    """Speed Limit Assist wrote the target: it is openpilot's again, and a press still held goes on from it with
+    openpilot's own arithmetic (its release, or its long-press ticks), as on the base."""
     self.pcm_target, self.pcm_settle = False, 0
-    self.pcm_handed_back = True
 
   # End BluePilot
 

@@ -258,6 +258,18 @@ class TestSpeedLimitAssistAutoConfirm:
     assert sla.state in ACTIVE_STATES
     assert SpeedLimitAssistState.preActive not in self.states
 
+  def test_a_new_limit_on_the_sample_after_a_write_applies(self):
+    # the sample after Speed Limit Assist's own write shows that write as a set speed change; a new limit arriving on
+    # that same sample was marked as seen and lost, the state going inactive with the old limit as the target
+    sla = self._sla()
+    while sla.state not in ACTIVE_STATES:
+      self._step(sla, 66, set_mph=50, frames=1)
+    self._step(sla, 44, set_mph=66, frames=1)   # the 66 written, and a new 44 limit, on one sample
+    assert sla.state in ACTIVE_STATES
+    assert sla.output_v_target == pytest.approx(44 * CV.MPH_TO_MS)
+    self._step(sla, 44, set_mph=44)
+    assert sla.state in ACTIVE_STATES
+
   def test_no_limit_means_not_active(self):
     sla = self._sla()
     self._step(sla, 0, set_mph=40)
@@ -283,7 +295,7 @@ class TestSignToClusterChain:
   """Cruise helper + Speed Limit Assist + ICBM stepped together the way card, plannerd and selfdrived run
   them, with a simulated Ford cluster that moves 1 mph per button press."""
 
-  def _drive(self, limits_mph, engage_mph=30, seconds_per_limit=12):
+  def _drive(self, limits_mph, engage_mph=30, seconds_per_limit=12, switch_after_write=False):
     from opendbc.car.structs import car
     from openpilot.selfdrive.car.cruise import VCruiseHelper, V_CRUISE_INITIAL
     CI, _ = _setup(FORD.FORD_EXPEDITION_MK4, op_long=True, icbm=True)
@@ -295,9 +307,15 @@ class TestSignToClusterChain:
     cluster_mph = engage_mph   # the PCM's own setpoint, as shown on the cluster
     enabled_prev = False
     log = []
-    for limit_mph in limits_mph:
+    schedule = list(limits_mph)
+    written = False
+    for i, limit_mph in enumerate(schedule):
       limit = limit_mph * CV.MPH_TO_MS
       for frame in range(seconds_per_limit * 100):
+        # switch_after_write: the first limit lasts only until openpilot's set speed shows its write, and the next one
+        # arrives on the planner sample after that
+        if switch_after_write and i == 0 and written and frame % 5 == 0:
+          break
         CS = car.CarState.new_message()
         CS.vEgo = engage_mph * CV.MPH_TO_MS
         CS.cruiseState.available = True
@@ -319,6 +337,7 @@ class TestSignToClusterChain:
         # card (100 Hz)
         helper.update_speed_limit_assist(False, lp_sp)
         helper.update_v_cruise(CS, True, False)
+        written = written or round(helper.v_cruise_cluster_kph * CV.KPH_TO_MPH) == round(limit_mph)
         if not enabled_prev:
           helper.initialize_v_cruise(CS, V_CRUISE_INITIAL)
         enabled_prev = True
@@ -332,6 +351,12 @@ class TestSignToClusterChain:
             cluster_mph -= 1
       log.append((limit_mph, round(helper.v_cruise_kph * CV.KPH_TO_MPH), cluster_mph, sla.state))
     return log
+
+  def test_a_limit_change_right_after_a_write_reaches_the_cluster(self):
+    # the posted limit changes on the planner sample right after openpilot's set speed first shows Speed Limit Assist's
+    # write: the new limit is still applied and the truck's cluster is walked to it
+    log = self._drive([66, 44], engage_mph=50, seconds_per_limit=12, switch_after_write=True)
+    assert log[-1][1:3] == (44, 44), log[-1]
 
   def test_cluster_follows_each_limit_with_no_driver_input(self):
     log = self._drive([45, 65, 25, 35])
