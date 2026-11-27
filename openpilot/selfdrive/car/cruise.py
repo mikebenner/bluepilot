@@ -73,8 +73,12 @@ class VCruiseHelper(VCruiseHelperSP):
           self._update_v_cruise_non_pcm(CS, _enabled, is_metric)
           if self.CP.pcmCruise:
             self.long_press_moves_5_mph(before, CS, is_metric)
-        if self.update_speed_limit_assist_v_cruise_non_pcm() and self.pcm_target:
-          self.hand_back_pcm_target()
+            self.keep_below_icbm_hold(before, is_metric)
+        if self.update_speed_limit_assist_v_cruise_non_pcm():
+          if self.CP.pcmCruise:
+            self.limit_as_shown(is_metric)
+          if self.pcm_target:
+            self.hand_back_pcm_target()
         # End BluePilot
         self.v_cruise_cluster_kph = self.v_cruise_kph
       else:
@@ -127,7 +131,7 @@ class VCruiseHelper(VCruiseHelperSP):
     runs, exactly as before."""
     held = self.pcm_button_held(CS)
     unset = self.v_cruise_kph == V_CRUISE_UNSET or self.v_cruise_kph > V_CRUISE_MAX
-    settling = self.pcm_target and self.pcm_settle > 0
+    settling = self.pcm_target and self.pcm_settle > 0   # this frame is inside the window
     if self.pcm_target and held:
       self.pcm_settle = PCM_SETTLE_FRAMES
     elif self.pcm_settle > 0:
@@ -143,7 +147,7 @@ class VCruiseHelper(VCruiseHelperSP):
       self.v_cruise_kph = V_CRUISE_UNSET
     # it continues only for what began in it: still no target, a press held now, or an open settle window. A press
     # that begins on a later frame is openpilot's to count.
-    self.pcm_target = self.v_cruise_kph == V_CRUISE_UNSET or held or settling
+    self.pcm_target = self.v_cruise_kph == V_CRUISE_UNSET or held or self.pcm_settle > 0   # after the window's last frame, it ends
     return True
 
   def pcm_set_speed(self, CS, is_metric) -> float | None:
@@ -176,9 +180,14 @@ class VCruiseHelper(VCruiseHelperSP):
     """A cruise button is down: Set+/Set- (button_timers) or Set/Resume (enable_button_timers). Ford reports its
     Set- as Set when the PCM was not yet engaged at the press, and keeps that type through the release. The enable
     timers already include this frame's release while button_timers do not: a Set/Resume released on this frame
-    still counts as held on it, so both kinds end their press on the same frame."""
-    return (any(timer > 0 for timer in self.button_timers.values()) or any(timer > 0 for timer in self.enable_button_timers.values())
-            or any(b.type in (ButtonType.setCruise, ButtonType.resumeCruise) and not b.pressed for b in CS.buttonEvents))
+    still counts as held on it, so both kinds end their press on the same frame; and a press beginning on this frame
+    counts from this frame, so one that begins inside a settle window is the PCM's."""
+    set_resume = (ButtonType.setCruise, ButtonType.resumeCruise)   # not Cancel or Main, which the enable timers also count
+    return (any(timer > 0 for timer in self.button_timers.values())
+            or any(self.enable_button_timers.get(button, 0) > 0 for button in set_resume)
+            or any(b.type in set_resume and not b.pressed for b in CS.buttonEvents)
+            # a press beginning on this frame, which button_timers only register after the decision
+            or any(b.type in (*set_resume, ButtonType.accelCruise, ButtonType.decelCruise) and b.pressed for b in CS.buttonEvents))
 
   def hand_back_pcm_target(self) -> None:
     """Speed Limit Assist wrote the target: it is openpilot's again. A press held now, including one that began on
@@ -186,6 +195,23 @@ class VCruiseHelper(VCruiseHelperSP):
     once this frame's button events are registered)."""
     self.pcm_target, self.pcm_settle = False, 0
     self.pcm_handed_back = True
+
+  def keep_below_icbm_hold(self, before: float, is_metric: bool) -> None:
+    """ICBM takes any target that reads 90 mph / 145 km/h or more as no target and holds the PCM where it is
+    (MAX_REASONABLE_TARGET in its controller). A target openpilot's own steps put there would then stay put until a
+    Set- brought it back under the line, and ICBM would start walking the PCM toward the old high value. So a press
+    never takes openpilot's target past 89 mph / 144 km/h; a PCM showing more is still taken as it is."""
+    top = 144. if is_metric else 89 * CV.MPH_TO_KPH
+    if self.v_cruise_kph != before and self.v_cruise_kph != V_CRUISE_UNSET and self.v_cruise_kph > top:
+      self.v_cruise_kph = float(max(top, min(before, top)))
+
+  def limit_as_shown(self, is_metric: bool) -> None:
+    """Speed Limit Assist writes its limit in tenths of a km/h; on an imperial car that is not a whole mph, and a
+    1.6 km/h tap from it can leave the shown mph unchanged (ICBM then pressed the PCM back). The written target is
+    the whole mph it shows (the same number Speed Limit Assist compares itself), under ICBM's hold line."""
+    if not is_metric and self.v_cruise_kph != V_CRUISE_UNSET:
+      shown = round(self.v_cruise_kph * CV.KPH_TO_MPH)
+      self.v_cruise_kph = float(np.clip(min(shown, 89) * CV.MPH_TO_KPH, self.v_cruise_min, V_CRUISE_MAX))
 
   def long_press_moves_5_mph(self, before: float, CS, is_metric: bool) -> None:
     """An imperial ICBM car with ordinary increments: a long-press tick the handler applied (pcm_last_press, its own

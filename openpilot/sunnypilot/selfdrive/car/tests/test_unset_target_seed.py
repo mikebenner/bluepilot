@@ -74,6 +74,18 @@ class Truck:
     self.run(before, 9)
     self.step(after, button, False)   # the PCM moves its own set speed one step per tap
 
+  def run_pcm(self, shown: float, frames: int, **kwargs) -> float:
+    """Like run, with the PCM taking one ICBM press (a step every 10 frames, Set+ / Set-) as one display unit; returns
+    the display at the end."""
+    for f in range(frames):
+      self.step(shown, **kwargs)
+      if f % 10 == 9:
+        if self.icbm.cruise_button == SendButtonState.increase:
+          shown += 1
+        elif self.icbm.cruise_button == SendButtonState.decrease:
+          shown -= 1
+    return shown
+
   @property
   def target(self) -> int:
     """The target in the display unit, rounded as ICBM rounds it."""
@@ -553,6 +565,71 @@ class TestUnsetTargetSeed(unittest.TestCase):
     truck.run(85, 400)
     self.assertEqual(truck.target, 85)
     self.assertFalse(truck.increased)
+
+  def test_a_long_set_plus_stays_under_icbms_hold_line(self):
+    # held Set+ from 65 mph for five long-press ticks, the PCM taking only one mph per tick (to 70): openpilot's target
+    # stops at 89 (not 90, which ICBM would take as no target and hold), ICBM brings the PCM there, and a later Set-
+    # is a step down from it with no press back up
+    truck = Truck()
+    truck.run(65, 500)
+    truck.step(65, ButtonType.accelCruise, True)
+    for mph in (65, 66, 67, 68, 69):
+      truck.run(mph, 50)
+    truck.step(70, ButtonType.accelCruise, False)
+    self.assertEqual(truck.target, 89)
+    shown = truck.run_pcm(70, 800)
+    self.assertEqual(shown, 89)
+    sent = len(truck.sent)
+    truck.tap(ButtonType.decelCruise, 88, 89)
+    shown = truck.run_pcm(88, 800)
+    self.assertEqual((truck.target, shown), (88, 88))
+    self.assertNotIn(SendButtonState.increase, truck.sent[sent:])
+
+  def test_taps_from_a_limit_move_a_whole_mph(self):
+    # this truck's recorded 58:1 limit (17.211 m/s) is written as 62.0 km/h, shown 39 mph; five Set+ taps and two
+    # gas-held Set- taps each move the shown speed one mph, the PCM taking each, and ICBM never presses back
+    truck = Truck()
+    truck.run(35, 100)
+    truck.limit = 17.211040496826172 / CV.MPH_TO_MS
+    truck.run(35, 300)
+    shown = truck.target
+    for _ in range(5):
+      truck.tap(ButtonType.accelCruise, shown + 1, shown)
+      truck.run(shown + 1, 150)
+      shown += 1
+      self.assertEqual(truck.target, shown)
+    for _ in range(2):
+      truck.step(shown, ButtonType.decelCruise, True, gas=True)
+      truck.run(shown, 9, gas=True)
+      truck.step(shown - 1, ButtonType.decelCruise, False, gas=True)
+      truck.run(shown - 1, 150)
+      shown -= 1
+      self.assertEqual(truck.target, shown)
+    self.assertNotIn(SendButtonState.decrease, truck.sent[400:400 + 5 * 160])
+
+  def test_a_press_just_after_the_settle_window_is_openpilots(self):
+    # a press from the unset window released as 35 first shows; a fresh Set- after the window's 20 frames is counted
+    # by openpilot (the PCM refusing it here), one inside it is the PCM's
+    for idle, want in ((PCM_SETTLE_FRAMES - 1, 35), (PCM_SETTLE_FRAMES, 34), (PCM_SETTLE_FRAMES + 1, 34)):
+      with self.subTest(idle=idle):
+        truck = Truck()
+        truck.step(35)
+        truck.step(35, ButtonType.decelCruise, True)
+        truck.step(35, ButtonType.decelCruise, False, late=2)
+        truck.run(35, idle, late=0)
+        truck.tap(ButtonType.decelCruise, 35, 35)
+        truck.run(35, 400, late=0)
+        self.assertEqual(truck.target, want)
+        self.assertFalse(truck.increased)
+
+  def test_cancel_and_main_do_not_extend_the_window(self):
+    truck = Truck()
+    truck.step(35)
+    truck.step(35, ButtonType.decelCruise, True)
+    truck.step(35, ButtonType.decelCruise, False, late=2)
+    truck.step(35, ButtonType.cancel, True, late=0)
+    truck.run(35, PCM_SETTLE_FRAMES + 5, late=0)
+    self.assertFalse(truck.helper.pcm_target)
 
   def test_a_press_with_the_gas_down_keeps_openpilots_own_result(self):
     # Set- while overriding with the gas: openpilot sets the target to the current speed (15.6 m/s, 35 mph)
