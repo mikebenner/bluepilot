@@ -129,14 +129,13 @@ class VCruiseHelper(VCruiseHelperSP):
       self.pcm_target = False
       return False
 
-    # while a press is held the target takes the PCM's set speed when openpilot's own handler would change it: on the
-    # release frame and on each long-press tick (once it has a value). Followed on every frame, the PCM's display
-    # moving under the press read as a string of manual set speed changes to Speed Limit Assist, which restarted its
-    # activation guard on each and wrote its limit only after the release, undoing the press.
+    # while the press is held the target keeps the first value it took, and takes the PCM's result from the release
+    # frame on. Followed during the hold (on every frame, or on each repeat), the PCM's display moving under the press
+    # read as manual set speed changes to Speed Limit Assist, which restarted its activation guard on each and wrote
+    # its limit only after the release, undoing the press; on the base the unset target reads the same all through.
     releasing = any(not b.pressed and b.type in SET_SPEED_BUTTONS for b in CS.buttonEvents)
-    tick = any(timer > 0 and timer % CRUISE_LONG_PRESS == 0 for timer in self.button_timers.values())
     set_speed = self.pcm_set_speed(CS, is_metric)
-    if set_speed is not None and (unset or not held or releasing or tick):
+    if set_speed is not None and (unset or not held or releasing):
       self.v_cruise_kph = set_speed
     elif unset:
       self.v_cruise_kph = V_CRUISE_UNSET
@@ -177,7 +176,8 @@ class VCruiseHelper(VCruiseHelperSP):
     Set- as Set when the PCM was not yet engaged at the press, and keeps that type through the release. The enable
     timers already include this frame's release while button_timers do not: a Set/Resume released on this frame
     still counts as held on it, so both kinds end their press on the same frame; and a press beginning on this frame
-    counts from this frame, so one that begins inside a settle window is the PCM's."""
+    counts from this frame (pcm_owns_target gives a Set+/Set- that begins once the target has a value back to
+    openpilot before this is asked)."""
     set_resume = (ButtonType.setCruise, ButtonType.resumeCruise)   # not Cancel or Main, which the enable timers also count
     return (any(timer > 0 for timer in self.button_timers.values())
             or any(self.enable_button_timers.get(button, 0) > 0 for button in set_resume)

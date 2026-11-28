@@ -300,38 +300,37 @@ class TestSpeedLimitAssistAutoConfirm:
     self._sample(sla, 71, 71, True, set_mph=43)
     assert sla.state == SpeedLimitAssistState.inactive
 
-  def _samples_to_active(self, sla, set_kph, posted_mph, final_mph, after_kph):
-    """Engaged with the set speed at set_kph for three samples, then after_kph: samples until Speed Limit Assist is
-    active."""
+  def _samples_to_active(self, sla, unset, posted_mph, final_mph, after_kph):
+    """Engaged with the set speed reading 145 km/h for three samples (openpilot's unset target, as the planner flags
+    it, or a real 145 km/h set speed), then after_kph: samples until Speed Limit Assist is active."""
     for i in range(40):
-      v = (set_kph if i < 3 else after_kph) * CV.KPH_TO_MS
+      v = (145. if i < 3 else after_kph) * CV.KPH_TO_MS
+      sla.v_cruise_unset = unset and i < 3
       sla.update(True, False, 30 * CV.MPH_TO_MS, 0., v, posted_mph * CV.MPH_TO_MS, final_mph * CV.MPH_TO_MS, True, 0., EventsSP())
       sla.enabled = True
       if sla.state in ACTIVE_STATES:
         return i
     return None
 
-  def test_a_first_set_speed_is_not_a_manual_change_but_a_press_from_90_is(self):
-    # openpilot's unset target arrives as exactly 145 km/h; a real 90 mph set speed as 144.84. A change from the first
-    # to 89 mph is the target taking the PCM's set speed (the 0.5 s guard keeps running); from the second it is a press
-    # (the guard restarts), as on the base
-    seed = self._samples_to_active(self._sla(), 145., 85, 93.5, 89 * CV.MPH_TO_KPH)
-    press = self._samples_to_active(self._sla(), 90 * CV.MPH_TO_KPH, 85, 93.5, 89 * CV.MPH_TO_KPH)
+  def test_a_first_set_speed_is_not_a_manual_change_but_a_press_from_145_is(self):
+    # openpilot's unset target and a real set speed at the top (145 km/h, or one a Set+ clamped there) read the same
+    # here; the planner says which. From unset to 89 mph is the target taking the PCM's set speed (the 0.5 s guard
+    # keeps running); from a real 145 it is a press (the guard restarts), as on the base
+    seed = self._samples_to_active(self._sla(), True, 85, 93.5, 89 * CV.MPH_TO_KPH)
+    press = self._samples_to_active(self._sla(), False, 85, 93.5, 89 * CV.MPH_TO_KPH)
     assert seed is not None and press is not None
     assert press >= seed + 3, (seed, press)
 
-  def test_a_valid_set_speed_clamped_to_145_is_not_a_first_set_speed(self):
-    # 90 mph showing at the engage (144.84 km/h), a Set+ clamping it to 145 km/h (what openpilot's unset target also
-    # reads as), then a press to 89: a press (the guard restarts), as on the base
-    clamped = self._sla()
-    for i in range(40):
-      v = (90 * CV.MPH_TO_KPH if i < 2 else 145. if i < 4 else 89 * CV.MPH_TO_KPH) * CV.KPH_TO_MS
-      clamped.update(True, False, 30 * CV.MPH_TO_MS, 0., v, 85 * CV.MPH_TO_MS, 93.5 * CV.MPH_TO_MS, True, 0., EventsSP())
-      clamped.enabled = True
-      if clamped.state in ACTIVE_STATES:
-        break
-    seed = self._samples_to_active(self._sla(), 145., 85, 93.5, 89 * CV.MPH_TO_KPH)
-    assert i >= seed + 3, (seed, i)
+  def test_a_new_lower_limit_on_the_sample_of_a_press_applies(self):
+    # a driver's Set- and a new limit under the set speed it now shows, on one sample: the limit is applied (active,
+    # the helper writes it); a higher one does not override the press (test_a_press_on_the_sample_a_new_limit_arrives_holds)
+    sla = self._sla()
+    self._activate(sla, 82.5, set_mph=62)
+    self._sample(sla, 75, 82.5, True, set_mph=83)     # its own write showing
+    assert sla.state in ACTIVE_STATES
+    self._sample(sla, 50, 55, True, set_mph=80)       # a Set- repeat and a 50 mph sign together
+    assert sla.state in ACTIVE_STATES
+    assert sla.output_v_target == pytest.approx(55 * CV.MPH_TO_MS)
 
   def test_a_limit_under_the_minimum_then_a_new_one_applies(self):
     # a 15 mph posted limit (16.5 final) is written as openpilot's 20 mph minimum; a new 35 (38.5) on the sample that
@@ -398,6 +397,7 @@ class TestSignToClusterChain:
         # plannerd (20 Hz): Speed Limit Assist sees openpilot's own set speed
         if frame % 5 == 0:
           v_cruise_ms = min(helper.v_cruise_cluster_kph, 145) * CV.KPH_TO_MS
+          sla.v_cruise_unset = helper.v_cruise_cluster_kph > 145   # as the planner sets it
           sla.update(True, False, CS.vEgo, 0., v_cruise_ms, limit, limit, True, 0., EventsSP())
           sla.enabled = True
           lp_sp = custom.LongitudinalPlanSP.new_message()

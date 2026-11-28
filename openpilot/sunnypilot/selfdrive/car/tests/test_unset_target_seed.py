@@ -67,6 +67,7 @@ class Truck:
         self.plan, self.plan_next = self.plan_next, None
       if self.frame % 5 == 0:
         limit = self.limit * self.unit if self.limit else 0.
+        self.sla.v_cruise_unset = self.helper.v_cruise_cluster_kph > V_CRUISE_MAX   # as the planner sets it
         self.sla.update(enabled, False, self.ego, 0., min(self.helper.v_cruise_cluster_kph, V_CRUISE_MAX) * CV.KPH_TO_MS,
                         limit, limit, bool(self.limit), 0., EventsSP())
         self.sla.enabled = True
@@ -809,21 +810,67 @@ class TestUnsetTargetSeed(unittest.TestCase):
     self.assertEqual(set(truck.sent[sent:]) - {SendButtonState.none, SendButtonState.decrease}, set())
     self.assertLessEqual(end, shown)
 
-  def test_a_pcm_owned_hold_follows_the_pcm_at_each_repeat(self):
+  def test_a_pcm_owned_hold_takes_the_pcms_result_at_the_release(self):
     # no limit; a Set- held from before the display shows (so the PCM's), the PCM taking a mph per repeat: the target
-    # follows the PCM at each repeat, as openpilot's own handler changes it then (it stayed at 55 to the release)
+    # keeps the first value it took through the hold and is the PCM's from the release on; nothing is pressed after
     truck = Truck()
     truck.step(55, late=8)
     truck.step(55, ButtonType.decelCruise, True, late=8)
-    shown, seen = 55, []
+    shown = 55
     for f in range(269):
       if f % 50 == 46:
         shown -= 1
       truck.step(shown, late=8)
-      if f % 50 == 49:   # the handler's repeat frame
-        seen.append((shown, truck.target))
-    self.assertEqual(len(seen), 5)
-    self.assertTrue(all(target == pcm for pcm, target in seen), seen)
+      if f > 10:
+        self.assertEqual(truck.target, 55)
+    truck.step(shown, ButtonType.decelCruise, False, late=8)
+    self.assertEqual(truck.target, shown)
+    sent = len(truck.sent)
+    self.assertEqual(truck.run_pcm(shown, 600, late=8), shown)
+    self.assertEqual(set(truck.sent[sent:]) - {SendButtonState.none}, set())
+
+  def test_a_hold_begun_before_the_first_display_lets_the_limit_in(self):
+    # posted 50 (55 final) throughout, the display 40 ms late, a Set- held from +10 ms to +2.71 s with the PCM taking a
+    # mph per repeat: Speed Limit Assist writes 55 during the hold and the rest of it counts from there (to 40), in
+    # every planner phase, as on the base. (The target followed the PCM at each repeat, each one restarting Speed Limit
+    # Assist's guard: it wrote after the release and ICBM pressed the PCM back up to 55.)
+    for phase in range(5):
+      with self.subTest(phase=phase):
+        truck = Truck(real_sla=True)
+        truck.ego = 55 * CV.MPH_TO_MS
+        truck.limit = 55
+        late = phase + 4
+        truck.run(55, phase, late=late, enabled=False)
+        truck.step(55, late=late)
+        truck.step(55, ButtonType.decelCruise, True, late=late)
+        shown = 55
+        for f in range(269):
+          if f % 50 == 48:
+            shown -= 1
+          truck.step(shown, late=late)
+        truck.step(shown, ButtonType.decelCruise, False, late=late)
+        self.assertEqual(truck.run_pcm(shown, 1500, late=late), 40)
+
+  def test_a_lower_limit_arriving_on_a_set_minus_repeat_applies(self):
+    # 62 before the engage under a 75 mph sign (82.5 final, written while the PCM is still at 62); a Set- held from
+    # +0.59 s whose first repeat takes the target to 80, and a 50 mph sign (55 final) on that planner sample: the new,
+    # lower limit is applied and ICBM brings the PCM down to 55. (The repeat read as a manual change, the sign was
+    # marked as seen, and ICBM raised the PCM from 61 to 80. The base does that with a limit of exactly 82.5, which
+    # its rounding matches to its own write; a hair under, it does not match, stays inactive and takes the sign.)
+    for first in (82.5, 82.499):
+      with self.subTest(first=first):
+        truck = Truck(real_sla=True)
+        truck.ego = 62 * CV.MPH_TO_MS
+        truck.limit = first
+        truck.run(62, 20, late=0, enabled=False)
+        truck.run(62, 59, late=0)
+        truck.step(62, ButtonType.decelCruise, True, late=0)
+        truck.run(62, 48, late=0)
+        truck.run(61, 2, late=0)
+        truck.limit = 55
+        truck.run(61, 9, late=0)
+        truck.step(61, ButtonType.decelCruise, False, late=0)
+        self.assertEqual((truck.run_pcm(61, 1500, late=0), truck.target), (55, 55))
 
   def test_a_tap_whose_display_comes_after_the_release_presses_nothing_back(self):
     # the tap-then-hold case with the PCM's 54 showing one frame after the tap's release (or after a 100 ms gap): the
