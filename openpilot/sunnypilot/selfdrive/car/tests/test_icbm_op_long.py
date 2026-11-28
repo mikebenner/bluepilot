@@ -300,26 +300,25 @@ class TestSpeedLimitAssistAutoConfirm:
     self._sample(sla, 71, 71, True, set_mph=43)
     assert sla.state == SpeedLimitAssistState.inactive
 
-  def _samples_to_active(self, sla, unset, posted_mph, final_mph, after_kph):
-    """Engaged with the set speed reading 145 km/h for three samples (openpilot's unset target, as the planner flags
-    it, or a real 145 km/h set speed), then after_kph: samples until Speed Limit Assist is active."""
+  def _samples_to_leave_disabled(self, sla, change_at):
+    """Engaged at 50 mph under a 66 mph limit, the set speed changing to 49 on sample change_at (None: never): samples
+    until Speed Limit Assist leaves its disabled state."""
     for i in range(40):
-      v = (145. if i < 3 else after_kph) * CV.KPH_TO_MS
-      sla.v_cruise_unset = unset and i < 3
-      sla.update(True, False, 30 * CV.MPH_TO_MS, 0., v, posted_mph * CV.MPH_TO_MS, final_mph * CV.MPH_TO_MS, True, 0., EventsSP())
-      sla.enabled = True
-      if sla.state in ACTIVE_STATES:
+      self._sample(sla, 60, 66, True, set_mph=49 if change_at is not None and i >= change_at else 50)
+      if sla.state != SpeedLimitAssistState.disabled:
         return i
     return None
 
-  def test_a_first_set_speed_is_not_a_manual_change_but_a_press_from_145_is(self):
-    # openpilot's unset target and a real set speed at the top (145 km/h, or one a Set+ clamped there) read the same
-    # here; the planner says which. From unset to 89 mph is the target taking the PCM's set speed (the 0.5 s guard
-    # keeps running); from a real 145 it is a press (the guard restarts), as on the base
-    seed = self._samples_to_active(self._sla(), True, 85, 93.5, 89 * CV.MPH_TO_KPH)
-    press = self._samples_to_active(self._sla(), False, 85, 93.5, 89 * CV.MPH_TO_KPH)
-    assert seed is not None and press is not None
-    assert press >= seed + 3, (seed, press)
+  def test_the_guard_runs_once_from_the_engage_with_auto_confirm(self):
+    # a set speed change in the 0.5 s after the engage does not restart the guard (restarted, the limit was written
+    # half a second after the last of a row of changes, over what the driver had just set); without auto-confirm it
+    # restarts as before
+    quiet = self._samples_to_leave_disabled(self._sla(), None)
+    assert quiet is not None
+    assert self._samples_to_leave_disabled(self._sla(), 3) == quiet
+    plain = self._sla()
+    plain.auto_confirm = False
+    assert self._samples_to_leave_disabled(plain, 3) == quiet + 3
 
   def test_a_new_lower_limit_on_the_sample_of_a_press_applies(self):
     # a driver's Set- and a new limit under the set speed it now shows, on one sample: the limit is applied (active,
@@ -397,7 +396,6 @@ class TestSignToClusterChain:
         # plannerd (20 Hz): Speed Limit Assist sees openpilot's own set speed
         if frame % 5 == 0:
           v_cruise_ms = min(helper.v_cruise_cluster_kph, 145) * CV.KPH_TO_MS
-          sla.v_cruise_unset = helper.v_cruise_cluster_kph > 145   # as the planner sets it
           sla.update(True, False, CS.vEgo, 0., v_cruise_ms, limit, limit, True, 0., EventsSP())
           sla.enabled = True
           lp_sp = custom.LongitudinalPlanSP.new_message()

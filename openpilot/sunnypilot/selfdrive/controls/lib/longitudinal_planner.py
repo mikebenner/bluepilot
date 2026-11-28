@@ -53,7 +53,6 @@ class LongitudinalPlannerSP:
 
     # Speed Limit Assist
     has_speed_limit = self.resolver.speed_limit_valid or self.resolver.speed_limit_last_valid
-    self.sla.v_cruise_unset = CS.vCruiseCluster > V_CRUISE_MAX  # BluePilot: before the clip above; see shows_first_set_speed
     self.sla.update(long_enabled, long_override, v_ego, a_ego, v_cruise_cluster, self.resolver.speed_limit,
                     self.resolver.speed_limit_final_last, has_speed_limit, self.resolver.distance, self.events_sp)
 

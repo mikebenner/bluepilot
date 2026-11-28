@@ -18,7 +18,6 @@ IMPERIAL_INCREMENT = round(CV.MPH_TO_KPH, 1)  # round here to avoid rounding err
 ButtonEvent = car.CarState.ButtonEvent
 ButtonType = car.CarState.ButtonEvent.Type
 CRUISE_LONG_PRESS = 50
-SET_SPEED_BUTTONS = (ButtonType.accelCruise, ButtonType.decelCruise, ButtonType.setCruise, ButtonType.resumeCruise)  # BluePilot
 PCM_SETTLE_FRAMES = 20  # BluePilot: see pcm_owns_target; 0.2 s, as BluePilot 7.1's cluster follower
 
 
@@ -67,7 +66,8 @@ class VCruiseHelper(VCruiseHelperSP):
       if not self.CP.pcmCruise or (not self.CP_SP.pcmCruiseSpeed and _enabled):
         # if stock cruise is completely disabled, then we can use our own set speed logic
         # BluePilot: on a car whose PCM holds the set speed, the target can be the PCM's for a while (see pcm_owns_target)
-        if not (self.CP.pcmCruise and self.pcm_owns_target(CS, is_metric)):
+        pcm_press = self.CP.pcmCruise and (self.pcm_owns_target(CS, is_metric) or self.icbm_holds_pcm_below(CS, is_metric))
+        if not pcm_press:
           self._update_v_cruise_non_pcm(CS, _enabled, is_metric)
         if self.update_speed_limit_assist_v_cruise_non_pcm() and self.pcm_target:
           self.hand_back_pcm_target()
@@ -129,13 +129,11 @@ class VCruiseHelper(VCruiseHelperSP):
       self.pcm_target = False
       return False
 
-    # while the press is held the target keeps the first value it took, and takes the PCM's result from the release
-    # frame on. Followed during the hold (on every frame, or on each repeat), the PCM's display moving under the press
-    # read as manual set speed changes to Speed Limit Assist, which restarted its activation guard on each and wrote
-    # its limit only after the release, undoing the press; on the base the unset target reads the same all through.
-    releasing = any(not b.pressed and b.type in SET_SPEED_BUTTONS for b in CS.buttonEvents)
+    # the target is the PCM's set speed through the press and its settle window, so the planner follows the driver's
+    # hold as the PCM applies it. (Speed Limit Assist's activation no longer depends on these changes: with
+    # auto-confirm its guard runs once from the engage, see speed_limit_assist.py.)
     set_speed = self.pcm_set_speed(CS, is_metric)
-    if set_speed is not None and (unset or not held or releasing):
+    if set_speed is not None:
       self.v_cruise_kph = set_speed
     elif unset:
       self.v_cruise_kph = V_CRUISE_UNSET
@@ -143,6 +141,17 @@ class VCruiseHelper(VCruiseHelperSP):
     # that begins on a later frame is openpilot's to count.
     self.pcm_target = self.v_cruise_kph == V_CRUISE_UNSET or held or self.pcm_settle > 0   # after the window's last frame, it ends
     return True
+
+  def icbm_holds_pcm_below(self, CS, is_metric) -> bool:
+    """ICBM takes a target of 90 mph / 145 km/h or more as no target and holds the PCM where it is. While the target
+    reads that and the PCM shows a real set speed at least two units under it (an 85 mph limit plus a 10% offset,
+    93.5, written with the PCM at 55), openpilot's own arithmetic turned a Set- into a target of 89, and ICBM walked
+    the PCM up to it: 34 mph faster after a press meant to slow down. In that state Set+/Set- are left to the PCM,
+    which applies them to its own set speed, and the target does not move; it changes again when Speed Limit Assist
+    writes one under the hold, or at the next engage."""
+    conv, top = (1., 145) if is_metric else (CV.KPH_TO_MPH, 90)
+    pcm = self.pcm_set_speed(CS, is_metric)
+    return round(self.v_cruise_kph * conv) >= top and pcm is not None and round(pcm * conv) <= top - 2
 
   def pcm_set_speed(self, CS, is_metric) -> float | None:
     """The PCM's displayed set speed as a target in km/h, or None when it shows none. Only a real one: Ford's display
@@ -176,8 +185,8 @@ class VCruiseHelper(VCruiseHelperSP):
     Set- as Set when the PCM was not yet engaged at the press, and keeps that type through the release. The enable
     timers already include this frame's release while button_timers do not: a Set/Resume released on this frame
     still counts as held on it, so both kinds end their press on the same frame; and a press beginning on this frame
-    counts from this frame (pcm_owns_target gives a Set+/Set- that begins once the target has a value back to
-    openpilot before this is asked)."""
+    counts from this frame. (A Set+/Set- that begins once the target has a value is openpilot's whatever this says:
+    pcm_owns_target returns before using it.)"""
     set_resume = (ButtonType.setCruise, ButtonType.resumeCruise)   # not Cancel or Main, which the enable timers also count
     return (any(timer > 0 for timer in self.button_timers.values())
             or any(self.enable_button_timers.get(button, 0) > 0 for button in set_resume)
