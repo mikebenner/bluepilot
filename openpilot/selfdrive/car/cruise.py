@@ -128,8 +128,8 @@ class VCruiseHelper(VCruiseHelperSP):
       return False
 
     # the target is the PCM's set speed through the press and its settle window, so the planner follows the driver's
-    # hold as the PCM applies it. (Speed Limit Assist's activation no longer depends on these changes: with
-    # auto-confirm its guard runs once from the engage, see speed_limit_assist.py.)
+    # hold as the PCM applies it. (Speed Limit Assist's activation does not depend on these changes: in an engagement
+    # that began with the target unset, its guard is not restarted by them; see engaged_unset in speed_limit_assist.py.)
     set_speed = self.pcm_set_speed(CS, is_metric)
     if set_speed is not None:
       self.v_cruise_kph = set_speed
