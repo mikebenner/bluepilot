@@ -131,6 +131,12 @@ class SpeedLimitAssist:
             self.speed_limit_final_last_conv != self.prev_speed_limit_final_last_conv and
             0 < self.speed_limit_final_last_conv < self.v_cruise_cluster_conv)
 
+  @property
+  def written_kph(self) -> float:
+    """The limit as the cruise helper stores it: tenths of a km/h, between openpilot's minimum set speed and 145."""
+    minimum = get_minimum_set_speed(self.is_metric) * (1. if self.is_metric else CV.MPH_TO_KPH)
+    return min(max(round(self._speed_limit_final_last * CV.MS_TO_KPH, 1), minimum), 145.)
+
   def expect_own_write(self) -> None:
     """After the state machine: the value the cruise helper writes this time, as this state machine will read it back
     (the helper stores the limit in tenths of a km/h, between openpilot's minimum set speed and 145 km/h); cleared by
@@ -141,10 +147,8 @@ class SpeedLimitAssist:
                                              self.speed_limit_final_last_conv != self.prev_speed_limit_final_last_conv)
     if wrote:
       speed_conv = CV.MS_TO_KPH if self.is_metric else CV.MS_TO_MPH
-      minimum = get_minimum_set_speed(self.is_metric) * (1. if self.is_metric else CV.MPH_TO_KPH)
-      kph = min(max(round(self._speed_limit_final_last * CV.MS_TO_KPH, 1), minimum), 145.)
-      conv = round(kph * CV.KPH_TO_MS * speed_conv)
-      # a limit ICBM would take as no target is not written (VCruiseHelperSP.icbm_takes_as_no_target)
+      conv = round(self.written_kph * CV.KPH_TO_MS * speed_conv)
+      # a limit ICBM would take as no target is not written as such (VCruiseHelperSP.icbm_takes_as_no_target)
       self.own_write_conv = conv if conv < (145 if self.is_metric else 90) else None
     elif self.v_cruise_cluster_changed and not self.shows_own_write or self.state not in ACTIVE_STATES:
       self.own_write_conv = None
@@ -173,7 +177,10 @@ class SpeedLimitAssist:
       if self.pcm_op_long and self.is_enabled:
         return self._speed_limit_final_last
       if not self.pcm_op_long and self.is_active:
-        return self._speed_limit_final_last
+        # BluePilot: with auto-confirm, the limit as the cruise helper stores it (tenths of a km/h). This state now
+        # stays active through its own write, and the raw limit beside the stored one could round to different whole
+        # mph for ICBM (65 mph plus 10%: 71.49999 against 71.52), a mph under the set speed shown.
+        return self.written_kph * CV.KPH_TO_MS if self.auto_confirm else self._speed_limit_final_last
 
     # Fallback
     return V_CRUISE_UNSET

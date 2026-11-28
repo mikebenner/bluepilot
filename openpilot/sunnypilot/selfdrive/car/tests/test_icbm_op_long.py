@@ -25,6 +25,11 @@ SendButtonState = custom.IntelligentCruiseButtonManagement.SendButtonState
 SpeedLimitAssistState = custom.LongitudinalPlanSP.SpeedLimit.AssistState
 
 
+def _stored_ms(limit_mph: float) -> float:
+  """A limit as the cruise helper stores it (tenths of a km/h), which is what auto-confirm Speed Limit Assist targets."""
+  return round(limit_mph * CV.MPH_TO_KPH, 1) * CV.KPH_TO_MS
+
+
 def _setup(car_name, op_long: bool, icbm: bool):
   params = Params()
   params.put_bool("IntelligentCruiseButtonManagement", icbm)
@@ -236,7 +241,7 @@ class TestSpeedLimitAssistAutoConfirm:
     self._step(sla, limit_mph, set_mph=30)
     assert sla.state in ACTIVE_STATES
     assert SpeedLimitAssistState.preActive not in self.states
-    assert sla.output_v_target == pytest.approx(limit_mph * CV.MPH_TO_MS)
+    assert sla.output_v_target == pytest.approx(_stored_ms(limit_mph))
 
   def test_new_limit_below_50_applies_without_a_press(self):
     sla = self._sla()
@@ -244,7 +249,7 @@ class TestSpeedLimitAssistAutoConfirm:
     self._step(sla, 45, set_mph=25)
     assert sla.state in ACTIVE_STATES
     assert SpeedLimitAssistState.preActive not in self.states
-    assert sla.output_v_target == pytest.approx(45 * CV.MPH_TO_MS)
+    assert sla.output_v_target == pytest.approx(_stored_ms(45))
 
   def test_manual_set_speed_change_holds_until_next_limit(self):
     sla = self._sla()
@@ -279,7 +284,7 @@ class TestSpeedLimitAssistAutoConfirm:
     self._activate(sla, 66, set_mph=50)
     self._step(sla, 44, set_mph=66, frames=1)   # the 66 written, and a new 44 limit, on one sample
     assert sla.state in ACTIVE_STATES
-    assert sla.output_v_target == pytest.approx(44 * CV.MPH_TO_MS)
+    assert sla.output_v_target == pytest.approx(_stored_ms(44))
     self._step(sla, 44, set_mph=44)
     assert sla.state in ACTIVE_STATES
 
@@ -329,7 +334,7 @@ class TestSpeedLimitAssistAutoConfirm:
     assert sla.state in ACTIVE_STATES
     self._sample(sla, 50, 55, True, set_mph=80)       # a Set- repeat and a 50 mph sign together
     assert sla.state in ACTIVE_STATES
-    assert sla.output_v_target == pytest.approx(55 * CV.MPH_TO_MS)
+    assert sla.output_v_target == pytest.approx(_stored_ms(55))
 
   def test_a_limit_under_the_minimum_then_a_new_one_applies(self):
     # a 15 mph posted limit (16.5 final) is written as openpilot's 20 mph minimum; a new 35 (38.5) on the sample that
@@ -338,7 +343,7 @@ class TestSpeedLimitAssistAutoConfirm:
     self._activate(sla, 16.5, set_mph=25)
     self._sample(sla, 38.5 / 1.1, 38.5, True, set_mph=20)
     assert sla.state in ACTIVE_STATES
-    assert sla.output_v_target == pytest.approx(38.5 * CV.MPH_TO_MS)
+    assert sla.output_v_target == pytest.approx(_stored_ms(38.5))
 
   def test_no_limit_means_not_active(self):
     sla = self._sla()

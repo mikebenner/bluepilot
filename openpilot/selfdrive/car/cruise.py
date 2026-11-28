@@ -68,7 +68,8 @@ class VCruiseHelper(VCruiseHelperSP):
         # BluePilot: on a car whose PCM holds the set speed, the target can be the PCM's for a while (see pcm_owns_target)
         if not (self.CP.pcmCruise and self.pcm_owns_target(CS, is_metric)):
           self._update_v_cruise_non_pcm(CS, _enabled, is_metric)
-        if self.update_speed_limit_assist_v_cruise_non_pcm() and self.pcm_target:
+        pcm_set_speed = self.pcm_set_speed(CS, is_metric) if self.CP.pcmCruise else None
+        if self.update_speed_limit_assist_v_cruise_non_pcm(pcm_set_speed) and self.pcm_target:
           self.hand_back_pcm_target()
         # End BluePilot
         self.v_cruise_cluster_kph = self.v_cruise_kph

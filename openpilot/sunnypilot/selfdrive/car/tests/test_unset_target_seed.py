@@ -979,11 +979,11 @@ class TestUnsetTargetSeed(unittest.TestCase):
     self.assertEqual(ends[0], ends[1])
     self.assertEqual(ends[0], (35, 35))
 
-  def test_a_limit_icbm_takes_as_no_target_is_not_written(self):
-    # 93.5 mph (an 85 mph sign plus this truck's 10% offset) with the PCM at 35 or 65: the target stays where it is and
-    # the PCM is held, as before. A Set- the PCM takes, a Set- then a Set+, or a held Set- then step from the speed the
-    # driver sees, and ICBM presses nothing back up. (The limit was written as 145 km/h; one Set- made that 89 mph and
-    # ICBM walked the PCM up to it.)
+  def test_a_limit_icbm_takes_as_no_target_holds_the_pcm_where_it_is(self):
+    # 93.5 mph (an 85 mph sign plus this truck's 10% offset) with the PCM at 35 or 65: the target is the PCM's own set
+    # speed and the PCM is held, as before. A Set- the PCM takes, a Set- then a Set+, or a held Set- then step from the
+    # speed the driver sees, and ICBM presses nothing back up. (The limit was written as 145 km/h; one Set- made that
+    # 89 mph and ICBM walked the PCM up to it.)
     for seed, presses in ((35, "tap"), (65, "tap"), (35, "pair"), (65, "hold")):
       with self.subTest(seed=seed, presses=presses):
         truck = Truck()
@@ -1009,6 +1009,71 @@ class TestUnsetTargetSeed(unittest.TestCase):
         self.assertLessEqual(end, shown)
         self.assertEqual(truck.target, end)
         self.assertNotIn(SendButtonState.increase, truck.sent[sent:])
+
+  def test_a_limit_icbm_takes_as_no_target_stops_a_walk_to_an_earlier_one(self):
+    # the real Speed Limit Assist. 50 under a posted 60 (66 final), a Set- tap at +0.3 s (49); the 66 is written at
+    # +0.5 s and ICBM starts toward it; an 85 mph sign (93.5) at +0.85 s holds the PCM where it has got to, as on the
+    # base, instead of letting the walk to 66 run on (17 Set+ after the driver's Set-)
+    truck = Truck(real_sla=True)
+    truck.ego = 50 * CV.MPH_TO_MS
+    truck.limit = 66
+    truck.run(50, 20, late=0, enabled=False)
+    truck.run(50, 30, late=0)
+    truck.tap(ButtonType.decelCruise, 49, 50)
+    shown = truck.run_pcm(49, 44, late=0)
+    truck.limit = 93.5
+    held = truck.run_pcm(shown, 10, late=0)
+    end = truck.run_pcm(held, 1500, late=0)
+    self.assertLessEqual(end, 52)
+    self.assertEqual((end, truck.target), (held, held))
+
+  def test_a_tap_after_a_limit_icbm_takes_as_no_target_steps_from_the_pcm(self):
+    # 66, then a posted 35 (38.5) at +5.0 s and, with the PCM still on its way down, an 85 mph sign at +5.5 s: the PCM
+    # is held where it is, and a Set+ at +6.1 s is one step up from there with nothing pressed after it (the 38.5 was
+    # left in force: the tap made it 40 and ICBM took the PCM down to it, 16 Set- after a Set+)
+    truck = Truck(real_sla=True)
+    truck.ego = 66 * CV.MPH_TO_MS
+    truck.limit = 66
+    truck.run(66, 20, late=0, enabled=False)
+    shown = truck.run_pcm(66, 500, late=0)
+    truck.limit = 38.5
+    shown = truck.run_pcm(shown, 50, late=0)
+    truck.limit = 93.5
+    shown = truck.run_pcm(shown, 59, late=0)
+    self.assertGreater(shown, 55)
+    truck.tap(ButtonType.accelCruise, shown + 1, shown)
+    sent = len(truck.sent)
+    self.assertEqual((truck.run_pcm(shown + 1, 1200, late=0), truck.target), (shown + 1, shown + 1))
+    self.assertEqual(set(truck.sent[sent:]) - {SendButtonState.none}, set())
+
+  def test_a_half_mph_limit_shows_and_steps_as_before(self):
+    # a 65 or 75 mph sign plus 10% is 71.5 / 82.5 mph: stored in tenths of a km/h it shows 72 / 83, and the limit
+    # itself, as the plan's Float32, reads 71.49999 / 82.49999, which ICBM rounds to 71 / 82. Speed Limit Assist's
+    # target is the stored value, so the PCM is brought to the speed shown and a Set+ is one step (the PCM sat a mph
+    # under the set speed shown, and a Set+ moved it two)
+    for limit, shows in ((71.4999963, 72), (82.4999963, 83)):
+      with self.subTest(limit=limit):
+        truck = Truck(real_sla=True)
+        truck.ego = (shows - 6) * CV.MPH_TO_MS
+        truck.limit = limit
+        truck.run(shows - 6, 20, late=0, enabled=False)
+        self.assertEqual((truck.run_pcm(shows - 6, 700, late=0), truck.target), (shows, shows))
+        truck.tap(ButtonType.accelCruise, shows + 1, shows)
+        sent = len(truck.sent)
+        self.assertEqual(truck.run_pcm(shows + 1, 600, late=0), shows + 1)
+        self.assertEqual(set(truck.sent[sent:]) - {SendButtonState.none}, set())
+
+  def test_the_no_target_line_is_read_as_icbm_reads_it(self):
+    # metric: a limit stored as 144.5 km/h reaches ICBM as 144.50000 (Float32 m/s), which it rounds to its 145 km/h
+    # "no target"; it is treated as one (the PCM is held at 80 and a Set- is a step from there)
+    truck = Truck(metric=True, real_sla=True)
+    truck.ego = 80 * CV.KPH_TO_MS
+    truck.limit = 144.51
+    truck.run(80, 20, late=0, enabled=False)
+    self.assertEqual((truck.run_pcm(80, 700, late=0), truck.target), (80, 80))
+    truck.tap(ButtonType.decelCruise, 79, 80)
+    self.assertEqual((truck.run_pcm(79, 1500, late=0), truck.target), (79, 79))
+    self.assertFalse(truck.increased)
 
   def test_a_lower_limit_after_one_icbm_takes_as_no_target_applies(self):
     # the real Speed Limit Assist: an 85 mph sign (93.5) is not written, the 35 mph one after it (38.5) is

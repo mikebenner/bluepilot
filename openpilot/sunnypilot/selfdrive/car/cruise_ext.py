@@ -137,25 +137,34 @@ class VCruiseHelperSP:
   # BluePilot
   def icbm_takes_as_no_target(self, v_cruise_kph: float) -> bool:
     """Where ICBM manages the PCM's set speed under openpilot longitudinal, it takes a target of 90 mph / 145 km/h or
-    more as no target and holds the PCM where it is. A limit that reads that (an 85 mph sign plus a 10% offset: 93.5)
-    was still written as openpilot's target, which then sat at the top with the PCM far under it; one Set- made it 89,
-    a real target again, and ICBM walked the PCM up to it (34 to 89). Such a limit is not written: the target stays
-    where it is, the PCM is held exactly as before, and presses step from the speed the driver sees."""
+    more as no target and holds the PCM where it is. Read as ICBM reads it: from the plan's Float32 m/s, rounded in
+    the display unit."""
     if not (self.CP.openpilotLongitudinalControl and self.CP.pcmCruise and not self.CP_SP.pcmCruiseSpeed):
       return False
-    conv, top = (1., 145) if self.sla_is_metric else (CV.KPH_TO_MPH, 90)
-    return round(float(v_cruise_kph) * conv) >= top
+    v_ms = float(np.float32(float(v_cruise_kph) * CV.KPH_TO_MS))
+    return round(v_ms * CV.MS_TO_KPH) >= 145 if self.sla_is_metric else round(v_ms * CV.MS_TO_MPH) >= 90
   # End BluePilot
 
-  def update_speed_limit_assist_v_cruise_non_pcm(self) -> bool:
-    """Returns whether it wrote the target (BluePilot: VCruiseHelper.pcm_owns_target hands the target back on that)."""
+  def update_speed_limit_assist_v_cruise_non_pcm(self, pcm_set_speed_kph: float | None = None) -> bool:
+    """Returns whether it wrote the target (BluePilot: VCruiseHelper.pcm_owns_target hands the target back on that).
+
+    BluePilot: a limit ICBM takes as no target (an 85 mph sign plus a 10% offset: 93.5) was written as openpilot's
+    target all the same, which then sat at the top with the PCM far under it; one Set- made it 89, a real target
+    again, and ICBM walked the PCM up to it (34 to 89). ICBM's answer to such a target is to hold the PCM where it
+    is, so that is what is written: the PCM's own set speed (pcm_set_speed_kph, when it shows a real one under that
+    line; otherwise nothing is written). The PCM is held exactly as before, a walk toward an earlier limit stops as
+    it did, and presses step from the speed the driver sees."""
     wrote = False
     if self.sla_state in SLA_ACTIVE_STATES and (self.prev_sla_state not in SLA_ACTIVE_STATES or
                                                 self.update_speed_limit_final_last_changed):
       target = np.clip(round(self.speed_limit_final_last_kph, 1), self.v_cruise_min, V_CRUISE_MAX)
-      if not self.icbm_takes_as_no_target(target):  # BluePilot
+      # BluePilot
+      if self.icbm_takes_as_no_target(target):
+        target = None if pcm_set_speed_kph is None or self.icbm_takes_as_no_target(pcm_set_speed_kph) else pcm_set_speed_kph
+      if target is not None:
         self.v_cruise_kph = target
         wrote = True
+      # End BluePilot
 
     self.prev_sla_state = self.sla_state
     self.prev_speed_limit_final_last_kph = self.speed_limit_final_last_kph
