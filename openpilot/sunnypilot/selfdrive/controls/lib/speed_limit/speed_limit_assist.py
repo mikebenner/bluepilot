@@ -68,6 +68,9 @@ class SpeedLimitAssist:
     self.long_enabled = False
     self.long_enabled_prev = False
     self.own_write_conv = None   # BluePilot: see shows_own_write
+    self.v_cruise_unset = False  # BluePilot: openpilot's target is unset; set by the planner before update(), which sees
+    self.v_cruise_unset_prev = False  # the set speed before clipping it (a real 145 km/h reads the same after the clip)
+    self.engaged_unset = False   # BluePilot: this engagement began with it unset; see the guard in the state machine
     self.is_enabled = False
     self.is_active = False
     self.output_v_target = V_CRUISE_UNSET
@@ -147,9 +150,7 @@ class SpeedLimitAssist:
                                              self.speed_limit_final_last_conv != self.prev_speed_limit_final_last_conv)
     if wrote:
       speed_conv = CV.MS_TO_KPH if self.is_metric else CV.MS_TO_MPH
-      conv = round(self.written_kph * CV.KPH_TO_MS * speed_conv)
-      # a limit ICBM would take as no target is not written as such (VCruiseHelperSP.icbm_takes_as_no_target)
-      self.own_write_conv = conv if conv < (145 if self.is_metric else 90) else None
+      self.own_write_conv = round(self.written_kph * CV.KPH_TO_MS * speed_conv)
     elif self.v_cruise_cluster_changed and not self.shows_own_write or self.state not in ACTIVE_STATES:
       self.own_write_conv = None
   # End BluePilot
@@ -179,8 +180,12 @@ class SpeedLimitAssist:
       if not self.pcm_op_long and self.is_active:
         # BluePilot: with auto-confirm, the limit as the cruise helper stores it (tenths of a km/h). This state now
         # stays active through its own write, and the raw limit beside the stored one could round to different whole
-        # mph for ICBM (65 mph plus 10%: 71.49999 against 71.52), a mph under the set speed shown.
-        return self.written_kph * CV.KPH_TO_MS if self.auto_confirm else self._speed_limit_final_last
+        # mph for ICBM (65 mph plus 10%: 71.49999 against 71.52), a mph under the set speed shown. A limit under
+        # openpilot's minimum set speed is stored as that minimum; the planner goes on following the limit itself.
+        stored = round(self._speed_limit_final_last * CV.MS_TO_KPH, 1)
+        if self.auto_confirm and stored == self.written_kph:
+          return stored * CV.KPH_TO_MS
+        return self._speed_limit_final_last
 
     # Fallback
     return V_CRUISE_UNSET
@@ -398,12 +403,14 @@ class SpeedLimitAssist:
     elif self.state == SpeedLimitAssistState.disabled:
       if self.long_enabled and self.enabled:
         # start or reset preActive timer if initially enabled or manual set speed change detected
-        # BluePilot: with auto-confirm the guard runs once from the engage and is not restarted by a set speed change.
-        # Restarted, the limit was written half a second after the last change in a row of them (a press held or
-        # repeated after engaging, the PCM's set speed showing late), over everything the driver had just set, and
-        # when that happened turned on a frame or two of timing. Now the limit is applied once, half a second after
-        # the engage, and a change after that holds until the next new limit.
-        if not self.long_enabled_prev or (self.v_cruise_cluster_changed and not self.auto_confirm):
+        # BluePilot: an engage that begins with openpilot's target unset (the PCM's set speed showing a few frames
+        # late) has the cruise helper take the PCM's set speed as the target. On the base the target stayed unset
+        # there, read the same on every sample, and never restarted this guard: the limit was written half a second
+        # after the engage. With auto-confirm that timing is kept for such an engage (engaged_unset), since the target
+        # taking a value, and the presses then counted from it, would otherwise move the write behind them.
+        if not self.long_enabled_prev:
+          self.engaged_unset = self.auto_confirm and (self.v_cruise_unset or self.v_cruise_unset_prev)
+        if not self.long_enabled_prev or (self.v_cruise_cluster_changed and not self.engaged_unset):
           self.long_engaged_timer = int(DISABLED_GUARD_PERIOD / DT_MDL)
 
         elif self.long_engaged_timer <= 0:
@@ -461,6 +468,7 @@ class SpeedLimitAssist:
 
     self.update_events(events_sp)
     self.expect_own_write()  # BluePilot
+    self.v_cruise_unset_prev = self.v_cruise_unset  # BluePilot
 
     # Update change tracking variables
     self.speed_limit_prev = self._speed_limit

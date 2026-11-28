@@ -305,25 +305,43 @@ class TestSpeedLimitAssistAutoConfirm:
     self._sample(sla, 71, 71, True, set_mph=43)
     assert sla.state == SpeedLimitAssistState.inactive
 
-  def _samples_to_leave_disabled(self, sla, change_at):
-    """Engaged at 50 mph under a 66 mph limit, the set speed changing to 49 on sample change_at (None: never): samples
-    until Speed Limit Assist leaves its disabled state."""
+  def _samples_to_leave_disabled(self, sla, change_at, unset_until=0):
+    """Engaged under a 66 mph limit, openpilot's target unset for the first unset_until samples (reading 145 km/h, as
+    the planner flags it) and 50 mph after, changing to 49 on sample change_at (None: never): samples until Speed Limit
+    Assist leaves its disabled state."""
     for i in range(40):
-      self._sample(sla, 60, 66, True, set_mph=49 if change_at is not None and i >= change_at else 50)
+      sla.v_cruise_unset = i < unset_until
+      set_mph = 145 * CV.KPH_TO_MPH if i < unset_until else 49 if change_at is not None and i >= change_at else 50
+      self._sample(sla, 60, 66, True, set_mph=set_mph)
       if sla.state != SpeedLimitAssistState.disabled:
         return i
     return None
 
-  def test_the_guard_runs_once_from_the_engage_with_auto_confirm(self):
-    # a set speed change in the 0.5 s after the engage does not restart the guard (restarted, the limit was written
-    # half a second after the last of a row of changes, over what the driver had just set); without auto-confirm it
-    # restarts as before
+  def test_the_guard_keeps_its_timing_for_an_engage_that_begins_unset(self):
+    # the set speed showing at the engage: a change in the 0.5 s after it restarts the guard, as on the base. The
+    # target unset at the engage and taking the PCM's set speed two samples later, then a press: neither restarts it,
+    # which is the timing the base has there (its target stays unset and reads the same on every sample)
     quiet = self._samples_to_leave_disabled(self._sla(), None)
     assert quiet is not None
-    assert self._samples_to_leave_disabled(self._sla(), 3) == quiet
-    plain = self._sla()
-    plain.auto_confirm = False
-    assert self._samples_to_leave_disabled(plain, 3) == quiet + 3
+    assert self._samples_to_leave_disabled(self._sla(), 3) == quiet + 3
+    assert self._samples_to_leave_disabled(self._sla(), None, unset_until=2) == quiet
+    assert self._samples_to_leave_disabled(self._sla(), 5, unset_until=2) == quiet
+
+  def test_the_planner_tells_speed_limit_assist_the_target_is_unset(self):
+    # through LongitudinalPlannerSP.update_targets: an unset target (255 km/h) and a real 145 km/h one read the same
+    # after the planner's clip; only the first is an engage that begins unset
+    from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
+    CI, _ = _setup(FORD.FORD_EXPEDITION_MK4, op_long=True, icbm=True)
+    for v_cruise_cluster, unset in ((255., True), (145., False)):
+      planner = LongitudinalPlannerSP(CI.CP, CI.CP_SP, None)
+      planner.sla.enabled = True
+      planner.scc.update = lambda *a, **k: None
+      planner.resolver.update = lambda *a, **k: None
+      planner.resolver.distance = 0.
+      sm = {"carState": _Obj(vCruiseCluster=v_cruise_cluster), "carControl": _Obj(enabled=True, cruiseControl=_Obj(override=False))}
+      planner.update_targets(sm, 20., 0., 20.)
+      assert planner.sla.v_cruise_unset is unset
+      assert planner.sla.engaged_unset is unset
 
   def test_a_new_lower_limit_on_the_sample_of_a_press_applies(self):
     # a driver's Set- and a new limit under the set speed it now shows, on one sample: the limit is applied (active,
@@ -401,6 +419,7 @@ class TestSignToClusterChain:
         # plannerd (20 Hz): Speed Limit Assist sees openpilot's own set speed
         if frame % 5 == 0:
           v_cruise_ms = min(helper.v_cruise_cluster_kph, 145) * CV.KPH_TO_MS
+          sla.v_cruise_unset = helper.v_cruise_cluster_kph > 145   # as the planner sets it
           sla.update(True, False, CS.vEgo, 0., v_cruise_ms, limit, limit, True, 0., EventsSP())
           sla.enabled = True
           lp_sp = custom.LongitudinalPlanSP.new_message()

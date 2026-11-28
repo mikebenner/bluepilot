@@ -68,8 +68,7 @@ class VCruiseHelper(VCruiseHelperSP):
         # BluePilot: on a car whose PCM holds the set speed, the target can be the PCM's for a while (see pcm_owns_target)
         if not (self.CP.pcmCruise and self.pcm_owns_target(CS, is_metric)):
           self._update_v_cruise_non_pcm(CS, _enabled, is_metric)
-        pcm_set_speed = self.pcm_set_speed(CS, is_metric) if self.CP.pcmCruise else None
-        if self.update_speed_limit_assist_v_cruise_non_pcm(pcm_set_speed) and self.pcm_target:
+        if self.update_speed_limit_assist_v_cruise_non_pcm() and self.pcm_target:
           self.hand_back_pcm_target()
         # End BluePilot
         self.v_cruise_cluster_kph = self.v_cruise_kph
@@ -90,8 +89,7 @@ class VCruiseHelper(VCruiseHelperSP):
           self.v_cruise_kph = set_speed if set_speed is not None else V_CRUISE_UNSET
           if is_pcm_code(CS):
             self.v_cruise_cluster_kph = V_CRUISE_UNSET
-        if self.CP.pcmCruise and not self.CP_SP.pcmCruiseSpeed:
-          self.pcm_press_while_disengaged(CS)
+        self.pcm_target, self.pcm_settle = False, 0   # nothing of the PCM's is carried into an engage but an unset target
         # End BluePilot
     else:
       self.v_cruise_kph = V_CRUISE_UNSET
@@ -155,19 +153,6 @@ class VCruiseHelper(VCruiseHelperSP):
     else:
       grid = min(round(CS.cruiseState.speedCluster * CV.MS_TO_MPH) * CV.MPH_TO_KPH, V_CRUISE_MAX)
     return float(max(grid, self.v_cruise_min))
-
-  def pcm_press_while_disengaged(self, CS) -> None:
-    """openpilot not (effectively) engaged, the PCM's cruise on: a Set+/Set- held now is the PCM's to apply, and
-    openpilot only becomes effectively engaged once it is released (update_enabled_state), so the ownership and its
-    settle window carry into the engagement. A release just before the engage keeps counting the window down; without
-    a press, nothing from an earlier engagement is kept."""
-    if self.pcm_button_held(CS):
-      self.pcm_target, self.pcm_settle = True, PCM_SETTLE_FRAMES
-    elif self.pcm_target and self.pcm_settle > 0:
-      self.pcm_settle -= 1   # a release just before the engage: the window keeps counting, as it would engaged
-      self.pcm_target = self.pcm_settle > 0
-    else:
-      self.pcm_target, self.pcm_settle = False, 0
 
   def pcm_button_held(self, CS) -> bool:
     """A cruise button is down: Set+/Set- (button_timers) or Set/Resume (enable_button_timers). Ford reports its
