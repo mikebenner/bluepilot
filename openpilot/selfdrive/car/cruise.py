@@ -66,8 +66,7 @@ class VCruiseHelper(VCruiseHelperSP):
       if not self.CP.pcmCruise or (not self.CP_SP.pcmCruiseSpeed and _enabled):
         # if stock cruise is completely disabled, then we can use our own set speed logic
         # BluePilot: on a car whose PCM holds the set speed, the target can be the PCM's for a while (see pcm_owns_target)
-        pcm_press = self.CP.pcmCruise and (self.pcm_owns_target(CS, is_metric) or self.icbm_holds_pcm_below(CS, is_metric))
-        if not pcm_press:
+        if not (self.CP.pcmCruise and self.pcm_owns_target(CS, is_metric)):
           self._update_v_cruise_non_pcm(CS, _enabled, is_metric)
         if self.update_speed_limit_assist_v_cruise_non_pcm() and self.pcm_target:
           self.hand_back_pcm_target()
@@ -141,17 +140,6 @@ class VCruiseHelper(VCruiseHelperSP):
     # that begins on a later frame is openpilot's to count.
     self.pcm_target = self.v_cruise_kph == V_CRUISE_UNSET or held or self.pcm_settle > 0   # after the window's last frame, it ends
     return True
-
-  def icbm_holds_pcm_below(self, CS, is_metric) -> bool:
-    """ICBM takes a target of 90 mph / 145 km/h or more as no target and holds the PCM where it is. While the target
-    reads that and the PCM shows a real set speed at least two units under it (an 85 mph limit plus a 10% offset,
-    93.5, written with the PCM at 55), openpilot's own arithmetic turned a Set- into a target of 89, and ICBM walked
-    the PCM up to it: 34 mph faster after a press meant to slow down. In that state Set+/Set- are left to the PCM,
-    which applies them to its own set speed, and the target does not move; it changes again when Speed Limit Assist
-    writes one under the hold, or at the next engage."""
-    conv, top = (1., 145) if is_metric else (CV.KPH_TO_MPH, 90)
-    pcm = self.pcm_set_speed(CS, is_metric)
-    return round(self.v_cruise_kph * conv) >= top and pcm is not None and round(pcm * conv) <= top - 2
 
   def pcm_set_speed(self, CS, is_metric) -> float | None:
     """The PCM's displayed set speed as a target in km/h, or None when it shows none. Only a real one: Ford's display

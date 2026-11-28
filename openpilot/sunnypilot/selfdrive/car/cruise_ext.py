@@ -58,6 +58,7 @@ class VCruiseHelperSP:
     # Speed Limit Assist
     self.sla_state = SpeedLimitAssistState.disabled
     self.prev_sla_state = SpeedLimitAssistState.disabled
+    self.sla_is_metric = False  # BluePilot
     self.has_speed_limit = False
     self.speed_limit_final_last = 0.
     self.speed_limit_final_last_kph = 0.
@@ -116,6 +117,7 @@ class VCruiseHelperSP:
     self.speed_limit_final_last = LP_SP.speedLimit.resolver.speedLimitFinalLast
     self.speed_limit_final_last_kph = self.speed_limit_final_last * CV.MS_TO_KPH
     self.sla_state = LP_SP.speedLimit.assist.state
+    self.sla_is_metric = is_metric  # BluePilot: see icbm_takes_as_no_target
     self.req_plus, self.req_minus = compare_cluster_target(self.v_cruise_cluster_kph * CV.KPH_TO_MS,
                                                            self.speed_limit_final_last, is_metric)
 
@@ -132,13 +134,28 @@ class VCruiseHelperSP:
 
     return False
 
+  # BluePilot
+  def icbm_takes_as_no_target(self, v_cruise_kph: float) -> bool:
+    """Where ICBM manages the PCM's set speed under openpilot longitudinal, it takes a target of 90 mph / 145 km/h or
+    more as no target and holds the PCM where it is. A limit that reads that (an 85 mph sign plus a 10% offset: 93.5)
+    was still written as openpilot's target, which then sat at the top with the PCM far under it; one Set- made it 89,
+    a real target again, and ICBM walked the PCM up to it (34 to 89). Such a limit is not written: the target stays
+    where it is, the PCM is held exactly as before, and presses step from the speed the driver sees."""
+    if not (self.CP.openpilotLongitudinalControl and self.CP.pcmCruise and not self.CP_SP.pcmCruiseSpeed):
+      return False
+    conv, top = (1., 145) if self.sla_is_metric else (CV.KPH_TO_MPH, 90)
+    return round(float(v_cruise_kph) * conv) >= top
+  # End BluePilot
+
   def update_speed_limit_assist_v_cruise_non_pcm(self) -> bool:
     """Returns whether it wrote the target (BluePilot: VCruiseHelper.pcm_owns_target hands the target back on that)."""
     wrote = False
     if self.sla_state in SLA_ACTIVE_STATES and (self.prev_sla_state not in SLA_ACTIVE_STATES or
                                                 self.update_speed_limit_final_last_changed):
-      self.v_cruise_kph = np.clip(round(self.speed_limit_final_last_kph, 1), self.v_cruise_min, V_CRUISE_MAX)
-      wrote = True
+      target = np.clip(round(self.speed_limit_final_last_kph, 1), self.v_cruise_min, V_CRUISE_MAX)
+      if not self.icbm_takes_as_no_target(target):  # BluePilot
+        self.v_cruise_kph = target
+        wrote = True
 
     self.prev_sla_state = self.sla_state
     self.prev_speed_limit_final_last_kph = self.speed_limit_final_last_kph

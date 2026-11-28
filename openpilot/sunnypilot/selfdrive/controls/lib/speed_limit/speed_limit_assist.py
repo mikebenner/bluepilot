@@ -143,7 +143,9 @@ class SpeedLimitAssist:
       speed_conv = CV.MS_TO_KPH if self.is_metric else CV.MS_TO_MPH
       minimum = get_minimum_set_speed(self.is_metric) * (1. if self.is_metric else CV.MPH_TO_KPH)
       kph = min(max(round(self._speed_limit_final_last * CV.MS_TO_KPH, 1), minimum), 145.)
-      self.own_write_conv = round(kph * CV.KPH_TO_MS * speed_conv)
+      conv = round(kph * CV.KPH_TO_MS * speed_conv)
+      # a limit ICBM would take as no target is not written (VCruiseHelperSP.icbm_takes_as_no_target)
+      self.own_write_conv = conv if conv < (145 if self.is_metric else 90) else None
     elif self.v_cruise_cluster_changed and not self.shows_own_write or self.state not in ACTIVE_STATES:
       self.own_write_conv = None
   # End BluePilot
